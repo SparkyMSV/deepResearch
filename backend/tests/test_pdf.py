@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 import fitz
 import pytest
@@ -22,6 +23,12 @@ def pdf_bytes():
 class Resp:
     def __init__(self, body):
         self._b = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass
 
     def raise_for_status(self):
         pass
@@ -68,3 +75,25 @@ def test_facts_to_evidence(monkeypatch, pdf_bytes):
 def test_bad_triage_json_returns_empty(monkeypatch, pdf_bytes):
     out, prompts = run(monkeypatch, pdf_bytes, "not json")
     assert out == [] and len(prompts) == 1
+
+
+def test_event_loop_stays_responsive(monkeypatch, pdf_bytes):
+    monkeypatch.setattr(pdf.requests, "get", lambda *a, **k: Resp(pdf_bytes))
+    monkeypatch.setattr(pdf, "_read_pages", lambda p, w: (time.sleep(0.3) or {1: "x"}, 12))
+
+    async def fake_cloud(role, messages, conn):
+        return '{"pages": []}'
+
+    monkeypatch.setattr(pdf, "cloud", fake_cloud)
+    ticks = 0
+
+    async def main():
+        nonlocal ticks
+        task = asyncio.create_task(pdf.read_pdf(URL, "o", 1, 0, connect(":memory:")))
+        while not task.done():
+            await asyncio.sleep(0.05)
+            ticks += 1
+        await task
+
+    asyncio.run(main())
+    assert ticks >= 3

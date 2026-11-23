@@ -2,7 +2,9 @@
 
 Only `read_pdf` is public; the task engine calls it for every PDF search hit.
 """
+import asyncio
 import os
+import threading
 import tempfile
 from datetime import datetime, timezone
 
@@ -19,6 +21,7 @@ MAX_BYTES = 50_000_000
 TRIAGE_PAGES = 8
 MAX_PAGES = 30
 _conv = None
+_lock = threading.Lock()  # converter/pdfium are not assumed thread-safe
 
 
 def _converter():
@@ -29,27 +32,28 @@ def _converter():
 
 
 def _download(url: str, path: str) -> None:
-    r = requests.get(url, stream=True, timeout=config.FETCH_TIMEOUT)
-    r.raise_for_status()
-    size = 0
-    with open(path, "wb") as f:
-        for chunk in r.iter_content(65536):
-            size += len(chunk)
-            if size > MAX_BYTES:
-                raise ValueError("pdf exceeds 50 MB cap")
-            f.write(chunk)
+    with requests.get(url, stream=True, timeout=config.FETCH_TIMEOUT) as r:
+        r.raise_for_status()
+        size = 0
+        with open(path, "wb") as f:
+            for chunk in r.iter_content(65536):
+                size += len(chunk)
+                if size > MAX_BYTES:
+                    raise ValueError("pdf exceeds 50 MB cap")
+                f.write(chunk)
 
 
 def _read_pages(path: str, wanted: list[int] | None) -> tuple[dict[int, str], int]:
     """Markdown by 1-based page (first TRIAGE_PAGES if wanted is None), and page count."""
-    doc = pdfium.PdfDocument(path)
-    try:
-        n = len(doc)
-        nums = range(1, min(n, TRIAGE_PAGES) + 1) if wanted is None else wanted
-        conv = _converter()
-        return {i: conv.pdf_page(path, doc, i - 1).markdown for i in nums}, n
-    finally:
-        doc.close()
+    with _lock:
+        doc = pdfium.PdfDocument(path)
+        try:
+            n = len(doc)
+            nums = range(1, min(n, TRIAGE_PAGES) + 1) if wanted is None else wanted
+            conv = _converter()
+            return {i: conv.pdf_page(path, doc, i - 1).markdown for i in nums}, n
+        finally:
+            doc.close()
 
 
 def _page_list(ranges, n: int) -> list[int]:
@@ -68,8 +72,8 @@ async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn) -
     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
     tmp.close()
     try:
-        _download(url, tmp.name)
-        head, n = _read_pages(tmp.name, None)
+        await asyncio.to_thread(_download, url, tmp.name)
+        head, n = await asyncio.to_thread(_read_pages, tmp.name, None)
         triage = await cloud("pdf", [{"role": "user", "content": (
             f"Objective: {objective}\nThe PDF has {n} pages. Here are the first {len(head)}:\n\n{_tagged(head)}\n\n"
             'Using the contents, pick the pages most likely to answer the objective. '
@@ -77,7 +81,7 @@ async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn) -
         pages = _page_list((parse_json(triage) or {}).get("pages"), n)
         if not pages:
             return []
-        body, _ = _read_pages(tmp.name, pages)
+        body, _ = await asyncio.to_thread(_read_pages, tmp.name, pages)
         raw = await cloud("pdf", [{"role": "user", "content": (
             f"Objective: {objective}\n\n{_tagged(body)}\n\n"
             "Extract facts relevant to the objective, quoting figures exactly. Reply as JSON only: "
