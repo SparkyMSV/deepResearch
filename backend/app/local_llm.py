@@ -11,7 +11,7 @@ from app import config
 CHAT, WORK = 0, 1
 
 _counter = itertools.count()
-_queues: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.PriorityQueue]" = weakref.WeakKeyDictionary()
+_queues: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, tuple]" = weakref.WeakKeyDictionary()
 _model = None  # (model, tokenizer), loaded once per process
 
 
@@ -37,20 +37,25 @@ def set_backend(fn: Callable[[list[dict], int], str]) -> None:
 async def _worker(q: asyncio.PriorityQueue) -> None:
     while True:
         _, _, messages, max_tokens, fut = await q.get()
-        if fut.cancelled():
+        if fut.done():
             continue
         try:
-            fut.set_result(await asyncio.to_thread(_backend, messages, max_tokens))
+            result = await asyncio.to_thread(_backend, messages, max_tokens)
         except Exception as e:  # deliver to the caller, keep the worker alive
-            fut.set_exception(e)
+            if not fut.done():
+                fut.set_exception(e)
+        else:
+            if not fut.done():  # caller may have been cancelled mid-generation
+                fut.set_result(result)
 
 
 async def qwen(messages: list[dict], priority: int = WORK, max_tokens: int = 800) -> str:
     loop = asyncio.get_running_loop()
-    q = _queues.get(loop)
-    if q is None:  # queue + worker are per event loop
-        q = _queues[loop] = asyncio.PriorityQueue()
-        loop.create_task(_worker(q))
+    if loop not in _queues:  # queue + worker are per event loop
+        q = asyncio.PriorityQueue()
+        # keep the task referenced: asyncio only holds weak refs to tasks
+        _queues[loop] = (q, loop.create_task(_worker(q)))
+    q = _queues[loop][0]
     fut = loop.create_future()
     await q.put((priority, next(_counter), messages, max_tokens, fut))
     return await fut

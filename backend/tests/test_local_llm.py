@@ -28,3 +28,20 @@ def test_parse_json():
     assert parse_json('<think>x</think>```json\n{"a":1}\n```') == {"a": 1}
     assert parse_json('ok then {"a":{"b":2}} trailing') == {"a": {"b": 2}}
     assert parse_json("no json") is None
+
+
+def test_cancelled_caller_does_not_kill_worker():
+    def slow_then_fast(messages, max_tokens):
+        time.sleep(0.2 if messages[0]["content"] == "slow" else 0)
+        return "done"
+
+    set_backend(slow_then_fast)
+
+    async def run():
+        try:
+            await asyncio.wait_for(qwen([{"role": "user", "content": "slow"}]), 0.05)
+        except asyncio.TimeoutError:
+            pass
+        return await asyncio.wait_for(qwen([{"role": "user", "content": "next"}]), 2)
+
+    assert asyncio.run(run()) == "done"
