@@ -1,11 +1,11 @@
 import { render, screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-let emit
+let emit, reconnect
 vi.mock('./api.js', () => ({
   getConversation: vi.fn(),
   sendMessage: vi.fn(() => new Promise(() => {})),
-  subscribe: vi.fn((id, cb) => { emit = cb; return () => {} }),
+  subscribe: vi.fn((id, cb, onReconnect) => { emit = cb; reconnect = onReconnect; return () => {} }),
 }))
 import * as api from './api.js'
 import Chat from './Chat.jsx'
@@ -82,5 +82,24 @@ describe('Chat', () => {
     act(() => emit({ type: 'message', message: { id: 9, role: 'assistant', content, kind: 'search_results', task_id: null } }))
     expect(screen.queryByRole('link', { name: 'Bad' })).toBeNull()
     expect(screen.getByRole('link', { name: 'Good' })).toBeTruthy()
+  })
+
+  it('failed send keeps the text and shows an error', async () => {
+    api.sendMessage.mockRejectedValueOnce(new Error('500'))
+    render(<Chat conversationId={1} />)
+    await screen.findByText('Find prices')
+    const box = screen.getByRole('textbox', { name: 'Message' })
+    fireEvent.change(box, { target: { value: 'keep me' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(await screen.findByText(/not sent/)).toBeTruthy()
+    expect(box.value).toBe('keep me')
+  })
+
+  it('refetches the conversation after the stream reconnects', async () => {
+    render(<Chat conversationId={1} />)
+    await screen.findByText('Find prices')
+    const n = api.getConversation.mock.calls.length
+    await act(async () => reconnect())
+    expect(api.getConversation.mock.calls.length).toBe(n + 1)
   })
 })

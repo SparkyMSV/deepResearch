@@ -36,6 +36,7 @@ export default function Chat({ conversationId, onSent }) {
   const [st, setSt] = useState(EMPTY)
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
+  const [err, setErr] = useState('')
   const input = useRef(null)
   const end = useRef(null)
 
@@ -43,8 +44,8 @@ export default function Chat({ conversationId, onSent }) {
     if (!conversationId) return
     let live = true
     setSt(EMPTY)
-    const unsub = subscribe(conversationId, (ev) => live && setSt((s) => applyEvent(s, ev)))
-    getConversation(conversationId)
+    setErr('')
+    const load = () => getConversation(conversationId)
       .then((c) => live && setSt((s) => ({
         // fetched rows are the base; events that arrived during the fetch go on top
         ...s,
@@ -52,6 +53,8 @@ export default function Chat({ conversationId, onSent }) {
         tasks: s.tasks.reduce(upsertTask, c.tasks),
       })))
       .catch((e) => console.error('getConversation failed', e))
+    const unsub = subscribe(conversationId, (ev) => live && setSt((s) => applyEvent(s, ev)), load)
+    load()
     input.current?.focus()
     return () => { live = false; unsub() }
   }, [conversationId])
@@ -64,12 +67,14 @@ export default function Chat({ conversationId, onSent }) {
     const t = text.trim()
     if (!t || sending) return
     setSending(true)
+    setErr('')
     try {
       await sendMessage(conversationId, t)
       setText('')
       onSent?.()
     } catch (e) {
       console.error('sendMessage failed', e)
+      setErr('Message not sent — check the connection and try again.')
     } finally {
       setSending(false)
       input.current?.focus()
@@ -97,6 +102,7 @@ export default function Chat({ conversationId, onSent }) {
         {st.tasks.filter((t) => !placed.has(t.id)).map(check)}
         <div ref={end} />
       </div>
+      {err && <div className="send-err muted" role="alert">{err}</div>}
       <div className="bar">
         <textarea
           ref={input} className="inp" rows={1} aria-label="Message" value={text} disabled={sending}
