@@ -1,0 +1,13 @@
+python-dotenv
+fastapi
+uvicorn
+sse-starlette
+mlx-lm
+ddgs
+trafilatura
+requests
+indra-ocr
+pypdfium2
+openai
+tzdata
+pytest
