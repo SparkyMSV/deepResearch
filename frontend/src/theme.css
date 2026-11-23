@@ -1,0 +1,35 @@
+:root, :root[data-theme='dark'] {
+  --bg: #161514; --surface: #1f1e1c; --raised: #2a2826; --line: #34312e;
+  --text: #ece9e4; --muted: #8f8a83; --accent: #e8650f;
+}
+:root[data-theme='light'] {
+  --bg: #fafaf8; --surface: #f1f0ed; --raised: #ffffff; --line: #e3e1dc;
+  --text: #161514; --muted: #8a8680;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body, #root { height: 100%; }
+body { font: 15px/1.45 -apple-system, 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); }
+button, input { font: inherit; color: inherit; }
+.muted { color: var(--muted); }
+.logo { font-weight: 650; font-size: 16px; }
+.logo b { color: var(--accent); }
+
+.login { height: 100%; display: flex; align-items: center; justify-content: center; }
+.card { width: 280px; padding: 26px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
+.fld { display: block; width: 100%; padding: 9px 11px; margin-top: 10px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); }
+.card .fld { background: var(--raised); }
+.fld:focus { outline: 1px solid var(--accent); }
+.btn { width: 100%; margin-top: 16px; padding: 9px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
+.hint { font-size: 11px; margin-top: 12px; text-align: center; }
+.err { font-size: 12px; margin-top: 10px; color: var(--accent); }
+
+.shell { height: 100%; display: flex; }
+.side { width: 220px; padding: 12px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; background: var(--surface); border-right: 1px solid var(--line); }
+.side .logo { padding: 2px 4px 14px; }
+.new { text-align: left; padding: 7px 9px; margin-bottom: 10px; border-radius: 6px; font-weight: 600; background: var(--raised); border: 1px solid var(--line); cursor: pointer; }
+.lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; margin: 4px 0 6px; }
+.item { text-align: left; padding: 6px 8px; border: 0; border-radius: 5px; background: none; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item:hover, .item.on { background: var(--raised); }
+.toggle { margin-top: auto; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: none; font-size: 12px; cursor: pointer; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 16px 18px; }
+.empty { margin: auto; text-align: center; }
