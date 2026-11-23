@@ -7,10 +7,11 @@ from app.local_llm import CHAT
 
 
 class Env:
-    def __init__(self, monkeypatch, router='{"action":"answer"}', run_task=None):
+    def __init__(self, monkeypatch, router='{"action":"answer"}', run_task=None, hits=None):
         self.conn = connect(":memory:")
         self.conv = insert(self.conn, "conversations", title=None)
         self.events, self.calls, self.searches, self.router = [], [], [], router
+        self.hits = [Hit("T", "http://u", "snip")] if hits is None else hits
         monkeypatch.setattr(events, "publish", lambda c, e: self.events.append(e))
         monkeypatch.setattr(chat, "qwen", self.qwen)
         monkeypatch.setattr(chat, "search", self.search)
@@ -26,7 +27,7 @@ class Env:
 
     async def search(self, query, objective, priority=None):
         self.searches.append((query, priority))
-        return [Hit("T", "http://u", "snip")]
+        return self.hits
 
     def msgs(self):
         return [dict(r) for r in self.conn.execute("select * from messages order by id")]
@@ -109,3 +110,18 @@ def test_answer_includes_latest_report(monkeypatch):
     asyncio.run(chat.handle_message(env.conn, env.conv, "what was the risk number?"))
     sys = env.calls[-1][0]["content"]
     assert "RISK-NUMBER-42" in sys and len(sys) < 7000
+
+
+def test_no_evidence_answer_has_no_citation_instruction(monkeypatch):
+    env = Env(monkeypatch)
+    asyncio.run(chat.handle_message(env.conn, env.conv, "hello"))
+    sys = env.calls[-1][0]["content"]
+    assert sys == chat.GENERAL_PROMPT and "Cite" not in sys and "search:" in sys
+
+
+def test_empty_search_skips_qwen(monkeypatch):
+    env = Env(monkeypatch, hits=[])
+    asyncio.run(chat.handle_message(env.conn, env.conv, "search: nothing"))
+    assert env.calls == []
+    m = env.msgs()
+    assert (m[-1]["kind"], m[-1]["content"]) == ("text", "No usable results found for that search.")

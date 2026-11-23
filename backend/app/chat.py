@@ -20,6 +20,9 @@ ROUTER_PROMPT = (
 )
 ANSWER_PROMPT = ("You are a helpful research assistant. Answer using the conversation and the evidence below. "
                  "Cite the URL of any evidence you use.")
+GENERAL_PROMPT = ("Answer from general knowledge, concisely. Do not cite sources or URLs. If the question needs "
+                  "current facts, say you haven't looked it up and suggest prefixing with search:.")
+NO_RESULTS = "No usable results found for that search."
 SEARCH_PROMPT = "Reply in 2-3 sentences summarizing what these search results say about the question."
 PROGRESS_PROMPT = "In one short sentence starting with 'Planning', tell the user the research is starting."
 SUMMARY_PROMPT = "Summarize this research report: the bottom line, key numbers, and main risks. Be concise."
@@ -83,6 +86,9 @@ async def handle_message(conn, conv_id: int, text: str) -> None:
         query = q.strip() if isinstance(q, str) and q.strip() else text
     if action == "search":
         results = [{"title": h.title, "url": h.url, "snippet": h.snippet} for h in await search(query, query, CHAT)]
+        if not results:  # nothing to summarize: don't let Qwen invent sources
+            _post(conn, conv_id, None, NO_RESULTS, "text")
+            return
         _post(conn, conv_id, None, json.dumps(results), "search_results")
         found = "\n".join(f"[{r['url']}] {r['title']}: {r['snippet']}" for r in results)
         _post(conn, conv_id, None, await _reply(conn, conv_id, SEARCH_PROMPT, found), "text")
@@ -94,6 +100,6 @@ async def handle_message(conn, conv_id: int, text: str) -> None:
         _bg.add(t)
         t.add_done_callback(_bg.discard)
     else:
-        _post(conn, conv_id, None, await _reply(conn, conv_id, ANSWER_PROMPT,
-                                                "\n\n".join(x for x in (_report(conn, conv_id),
-                                                                        _evidence(conn, conv_id, text)) if x)), "text")
+        context = "\n\n".join(x for x in (_report(conn, conv_id), _evidence(conn, conv_id, text)) if x)
+        prompt = ANSWER_PROMPT if context else GENERAL_PROMPT
+        _post(conn, conv_id, None, await _reply(conn, conv_id, prompt, context), "text")
