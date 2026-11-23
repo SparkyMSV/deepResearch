@@ -1,8 +1,9 @@
 """Task engine: cloud plan, per-sub-task search loop on Qwen, cloud check-ins, cited report."""
 import asyncio
-import json
 import logging
 from dataclasses import asdict
+
+import openai
 
 from app import config, events
 from app.cloud_llm import QuotaExhausted, cloud
@@ -81,7 +82,8 @@ async def run_task(conn, conv_id: int, task_id: int) -> str:
         _set(conn, conv_id, "tasks", t, status="running")
         prompt = _ask(PLAN_PROMPT.format(n=config.MAX_SUBTASKS), t["objective"])
         raw = await _retry(conn, conv_id, "tasks", t, lambda: cloud("plan", prompt, conn))
-        plan = [s for s in (parse_json(raw) or {}).get("subtasks") or [] if isinstance(s, dict)]
+        plan = (parse_json(raw) or {}).get("subtasks")
+        plan = [s for s in plan if isinstance(s, dict)] if isinstance(plan, list) else []
         plan = plan or [{"objective": t["objective"], "query": t["objective"]}]  # bad plan JSON: one sub-task
         ids = []
         for s in plan[: config.MAX_SUBTASKS]:
@@ -110,8 +112,10 @@ async def run_task(conn, conv_id: int, task_id: int) -> str:
         for r in conn.execute("select * from subtasks where task_id=? and status not in ('done','partial')",
                               (task_id,)).fetchall():
             _set(conn, conv_id, "subtasks", dict(r), status="failed")
-        _post(conn, conv_id, task_id, f"Research stopped: Gemini/Groq call failed ({type(e).__name__}). "
-                                      "Check API keys in .env.", "progress")
+        name = type(e).__name__
+        text = (f"Research stopped: Gemini/Groq call failed ({name}). Check API keys in .env."
+                if isinstance(e, openai.APIError) else f"Research stopped: {name}: {str(e)[:200]}.")
+        _post(conn, conv_id, task_id, text, "progress")
         return ""
     finally:
         _pdf_seen.pop(task_id, None)
@@ -139,8 +143,14 @@ async def _round(conn, st: dict, query: str, seen: set[str]) -> int:
             if hit.url in seen:
                 continue
             seen.add(hit.url)
-            evs = await _retry(conn, st["conv_id"], "subtasks", st,
-                               lambda: read_pdf(hit.url, st["objective"], st["id"], st["loop"], conn))
+            try:
+                evs = await _retry(conn, st["conv_id"], "subtasks", st,
+                                   lambda: read_pdf(hit.url, st["objective"], st["id"], st["loop"], conn))
+            except openai.APIError:  # cloud failures still fail the task; QuotaExhausted is retried above
+                raise
+            except Exception as e:  # dead link, size cap, timeout, corrupt PDF: skip this hit
+                log.warning("skipping PDF %s: %r", hit.url, e)
+                evs = []
         else:
             evs = [Evidence(st["id"], st["loop"], hit.url, hit.title, p, hit.published, hit.fetched_at)
                    for p in await passages(hit, st["objective"])]
@@ -190,7 +200,9 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
                 break
             if decision == "restart" or n >= config.ROUNDS_PER_LOOP:  # a full loop counts as a restart
                 if decision == "restart":
-                    loops = [x for x in d.get("off_target_loops") or [] if isinstance(x, int)]
+                    raw_loops = d.get("off_target_loops")
+                    loops = [int(x) for x in raw_loops if isinstance(x, int) or (isinstance(x, str) and x.isdigit())
+                             ] if isinstance(raw_loops, list) else []
                     conn.executemany("update evidence set off_target=1 where subtask_id=? and loop=?",
                                      [(subtask_id, x) for x in loops])
                     conn.commit()

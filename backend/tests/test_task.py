@@ -3,6 +3,7 @@ import json
 
 import httpx
 import openai
+import requests
 
 from app import config, events, task
 from app.cloud_llm import QuotaExhausted
@@ -159,3 +160,31 @@ def test_pdf_hit_routed_once(monkeypatch):
     env.run_subtask(sid)
     assert env.pdf_calls == ["http://x/doc.pdf"]
     assert env.conn.execute("select page from evidence").fetchall()[0][0] == 9
+
+
+def test_bad_pdf_link_skipped(monkeypatch):
+    pdf_hit = lambda q: [Hit("doc", f"http://x/{q}.pdf", "", is_pdf=True)]
+    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}], hits=pdf_hit)
+
+    async def dead(*a):
+        raise requests.HTTPError("404")
+
+    monkeypatch.setattr(task, "read_pdf", dead)
+    st = env.run_subtask(env.subtask())
+    assert st["status"] == "done"
+
+
+def test_non_list_off_target_loops_ignored(monkeypatch):
+    restart = {"decision": "restart", "query": "fresh", "off_target_loops": 0}
+    env = Env(monkeypatch, checkins=[restart, {"decision": "restart", "off_target_loops": ["0", "x"]},
+                                     {"decision": "sufficient"}])
+    st = env.run_subtask(env.subtask())
+    assert st["status"] == "done"
+    rows = env.conn.execute("select loop, off_target from evidence").fetchall()
+    assert all(r["off_target"] == (r["loop"] == 0) for r in rows)
+
+
+def test_non_list_plan_falls_back(monkeypatch):
+    env = Env(monkeypatch, plan={"subtasks": 3}, checkins=[{"decision": "sufficient"}])
+    assert asyncio.run(task.run_task(env.conn, env.conv, env.task_id)) == "# Report"
+    assert env.conn.execute("select objective from subtasks").fetchall()[0][0] == "obj"
