@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import Login from './Login.jsx'
 import ThemeToggle from './ThemeToggle.jsx'
 import Sidebar from './Sidebar.jsx'
+import Chat from './Chat.jsx'
 import { createConversation } from './api.js'
 
 // localStorage/sessionStorage can throw (private mode); never let that break the UI.
@@ -46,12 +47,17 @@ export default function App() {
     }
   }
 
+  // The backend titles a conversation on its first message; refetch the sidebar then and again shortly after.
+  function onSent() {
+    setRefreshKey((k) => k + 1)
+    setTimeout(() => setRefreshKey((k) => k + 1), 1500)
+  }
+
   return (
     <div className="shell">
       <Sidebar activeId={activeId} onSelect={setActiveId} onNew={newResearch} theme={theme} onToggleTheme={toggleTheme} refreshKey={refreshKey} />
-      {/* Task 10: render <Chat conversationId={activeId} /> here. */}
       <main className="main">
-        <div className="empty muted">{activeId ? `Conversation ${activeId}` : 'Select or start a research'}</div>
+        <Chat conversationId={activeId} onSent={onSent} />
       </main>
     </div>
   )
