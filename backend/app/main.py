@@ -1,4 +1,4 @@
-"""HTTP API + SSE. Run: uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000"""
+"""HTTP API + SSE. Run: uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8765"""
 import asyncio
 import json
 import logging
@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
-    CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_methods=["*"], allow_headers=["*"]
 )
 
 
@@ -110,9 +110,8 @@ async def post_message(cid: int, body: Msg):
 
 @app.get("/api/conversations/{cid}/events")
 async def stream(cid: int):
-    q = events.subscribe(cid)
-
     async def gen():
+        q = events.subscribe(cid)
         try:
             while True:
                 yield {"data": json.dumps(await q.get())}
@@ -125,4 +124,4 @@ async def stream(cid: int):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8765)

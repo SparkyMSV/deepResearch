@@ -66,3 +66,20 @@ def test_startup_marks_interrupted(dbpath, monkeypatch):
     conn = db.connect(dbpath)
     assert conn.execute("select status from subtasks where id=?", (s,)).fetchone()[0] == "interrupted"
     assert conn.execute("select status from tasks where id=?", (t,)).fetchone()[0] == "interrupted"
+
+
+def test_background_error_posts_apology(client, monkeypatch):
+    import app.main as main
+
+    async def boom(conn, conv_id, text):
+        raise ValueError("x")
+
+    monkeypatch.setattr(main, "handle_message", boom)
+    cid = client.post("/api/conversations").json()["id"]
+    assert client.post(f"/api/conversations/{cid}/messages", json={"text": "hi"}).status_code == 202
+    for _ in range(50):  # background task runs on the app's loop
+        msgs = client.get(f"/api/conversations/{cid}").json()["messages"]
+        if msgs:
+            break
+    assert msgs[-1]["role"] == "assistant"
+    assert msgs[-1]["content"] == "Sorry, something went wrong: ValueError."
