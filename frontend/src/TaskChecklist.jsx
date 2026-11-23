@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-const DOT = { running: 'run', checking_in: 'run', restarted: 'run', failed: 'warn', done: 'done', queued: 'q', paused_quota: 'warn', partial: 'warn', interrupted: 'warn' }
+const DOT = { running: 'run', checking_in: 'run', restarted: 'run', failed: 'q', done: 'done', queued: 'q', paused_quota: 'warn', partial: 'warn', interrupted: 'warn' }
 
 function tag(s) {
   const n = s.round || 0
