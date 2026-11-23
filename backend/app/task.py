@@ -49,8 +49,8 @@ def _set(conn, conv_id: int, table: str, row: dict, **cols) -> None:
     events.publish(conv_id, {"type": kind, kind: {k: row[k] for k in _FIELDS[table]}})
 
 
-def _post(conn, conv_id: int, task_id: int, content: str, kind: str) -> None:
-    msg = {"role": "assistant", "content": content, "kind": kind, "task_id": task_id}
+def _post(conn, conv_id: int, task_id: int | None, content: str, kind: str, role: str = "assistant") -> None:
+    msg = {"role": role, "content": content, "kind": kind, "task_id": task_id}
     msg["id"] = insert(conn, "messages", conversation_id=conv_id, **msg)
     events.publish(conv_id, {"type": "message", "message": msg})
 
