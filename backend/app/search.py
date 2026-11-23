@@ -42,7 +42,7 @@ def fetch(hit: Hit) -> Hit | None:
             if len(body) >= config.FETCH_MAX_BYTES:
                 body = body[:config.FETCH_MAX_BYTES]
                 break
-        out = trafilatura.extract(body.decode("utf-8", "replace"), with_metadata=True, output_format="json")
+        out = trafilatura.extract(body, with_metadata=True, output_format="json")
         data = json.loads(out) if out else {}
         if not data.get("text"):
             return None

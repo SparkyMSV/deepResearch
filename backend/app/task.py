@@ -15,6 +15,8 @@ from app.search import passages, search
 log = logging.getLogger(__name__)
 
 QUOTA_RETRY_SECONDS = 900
+MAX_PDFS_PER_SUBTASK = 5  # each PDF read costs cloud "pdf" quota
+CHECKIN_MAX_CHARS, REPORT_MAX_CHARS = 12_000, 60_000
 _FIELDS = {"tasks": ("id", "status", "objective"),
            "subtasks": ("id", "task_id", "objective", "status", "round", "loop", "restarts")}
 _pdf_seen: dict[int, set[str]] = {}  # task_id -> PDF URLs already read in that task
@@ -62,14 +64,18 @@ async def _retry(conn, conv_id: int, table: str, row: dict, make):
         try:
             out = await make()
             break
-        except QuotaExhausted:
+        except QuotaExhausted as e:
             if prev is None:
                 prev = row["status"]
                 _set(conn, conv_id, table, row, status="paused_quota")
-            await asyncio.sleep(QUOTA_RETRY_SECONDS)
+            await asyncio.sleep(e.retry_after or QUOTA_RETRY_SECONDS)
     if prev is not None:
         _set(conn, conv_id, table, row, status=prev)
     return out
+
+
+def _cap(text: str, n: int) -> str:
+    return text if len(text) <= n else text[:n] + "\n[truncated]"
 
 
 def _ask(system: str, user: str) -> list[dict]:
@@ -101,7 +107,7 @@ async def run_task(conn, conv_id: int, task_id: int) -> str:
             for j in jobs:
                 j.cancel()
             raise
-        prompt = _ask(REPORT_PROMPT, _report_input(conn, t))
+        prompt = _ask(REPORT_PROMPT, _cap(_report_input(conn, t), REPORT_MAX_CHARS))
         report = await _retry(conn, conv_id, "tasks", t, lambda: cloud("report", prompt, conn))
         _set(conn, conv_id, "tasks", t, status="done", report=report)
         _post(conn, conv_id, task_id, report, "report")
@@ -142,7 +148,11 @@ async def _round(conn, st: dict, query: str, seen: set[str]) -> int:
         if hit.is_pdf:
             if hit.url in seen:
                 continue
+            if st["pdf_reads"] >= MAX_PDFS_PER_SUBTASK:
+                log.info("sub-task %s: PDF cap reached, skipping %s", st["id"], hit.url)
+                continue
             seen.add(hit.url)
+            st["pdf_reads"] += 1
             try:
                 evs = await _retry(conn, st["conv_id"], "subtasks", st,
                                    lambda: read_pdf(hit.url, st["objective"], st["id"], st["loop"], conn))
@@ -159,14 +169,22 @@ async def _round(conn, st: dict, query: str, seen: set[str]) -> int:
     return len(hits)
 
 
-async def _checkin(conn, conv_id: int, st: dict, queries: list[str]) -> dict:
+async def _checkin(conn, conv_id: int, st: dict, queries: list[str]) -> dict | None:
+    """The supervisor's decision, or None if the call failed or the reply wasn't JSON."""
     ev = conn.execute("select loop, url, passage from evidence where subtask_id=? and off_target=0 "
                       "order by id desc limit 40", (st["id"],)).fetchall()
-    user = (f"Objective: {st['objective']}\nCurrent loop: {st['loop']}\nQueries so far:\n"
-            + "\n".join(queries) + "\nEvidence:\n"
-            + "\n".join(f"[loop {e['loop']}] {e['url']}: {e['passage']}" for e in ev))
-    raw = await _retry(conn, conv_id, "subtasks", st, lambda: cloud("checkin", _ask(CHECKIN_PROMPT, user), conn))
-    return parse_json(raw) or {}
+    user = _cap(f"Objective: {st['objective']}\nCurrent loop: {st['loop']}\nQueries so far:\n"
+                + "\n".join(queries) + "\nEvidence:\n"
+                + "\n".join(f"[loop {e['loop']}] {e['url']}: {e['passage']}" for e in ev), CHECKIN_MAX_CHARS)
+    try:
+        raw = await _retry(conn, conv_id, "subtasks", st, lambda: cloud("checkin", _ask(CHECKIN_PROMPT, user), conn))
+    except openai.APIError as e:  # end this sub-task only; siblings keep running
+        log.warning("sub-task %s check-in failed: %r", st["id"], e)
+        return None
+    d = parse_json(raw or "")
+    if d is None:
+        log.warning("sub-task %s check-in reply unparseable: %r", st["id"], (raw or "")[:200])
+    return d
 
 
 async def _rewrite(st: dict, query: str, queries: list[str]) -> str:
@@ -179,6 +197,7 @@ async def _rewrite(st: dict, query: str, queries: list[str]) -> str:
 async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
     st = _row(conn, "subtasks", subtask_id)
     st["conv_id"] = conv_id  # rides along for _round's quota retries; never written to the DB
+    st["pdf_reads"] = 0  # likewise: PDFs read by this sub-task, capped at MAX_PDFS_PER_SUBTASK
     seen = _pdf_seen.setdefault(st["task_id"], set())
     query = f"{st['needs_document']} pdf" if st["needs_document"] else st["query"]
     queries: list[str] = []
@@ -194,6 +213,9 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
         if n % config.CHECKIN_EVERY == 0 or n >= config.ROUNDS_PER_LOOP:
             _set(conn, conv_id, "subtasks", st, status="checking_in")
             d = await _checkin(conn, conv_id, st, queries)
+            if d is None:
+                _set(conn, conv_id, "subtasks", st, status="partial")
+                break
             decision = d.get("decision")
             if decision == "sufficient":
                 _set(conn, conv_id, "subtasks", st, status="done")

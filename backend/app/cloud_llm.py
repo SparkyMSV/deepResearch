@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -14,8 +15,15 @@ _BASE = {
 }
 
 
+COOLDOWN_SECONDS = 60
+_cool: dict[str, float] = {}  # model -> time.monotonic() when its 429 cooldown ends
+_clients: dict[str, Any] = {}  # provider -> client, one per process
+
+
 class QuotaExhausted(Exception):
-    pass
+    def __init__(self, role: str, retry_after: float | None = None):
+        super().__init__(role)
+        self.retry_after = retry_after  # seconds; None means daily quota is gone
 
 
 def _default_factory(provider: str) -> Any:
@@ -29,6 +37,13 @@ _factory: Callable[[str], Any] = _default_factory
 def set_client_factory(fn: Callable[[str], Any]) -> None:
     global _factory
     _factory = fn
+    _clients.clear()
+
+
+def _client(provider: str) -> Any:
+    if provider not in _clients:
+        _clients[provider] = _factory(provider)
+    return _clients[provider]
 
 
 def _now() -> datetime:
@@ -55,17 +70,20 @@ def _set_used(conn: sqlite3.Connection, day: str, model: str, used: int) -> None
 
 async def cloud(role: str, messages: list[dict], conn: sqlite3.Connection) -> str:
     day = _day()
+    cooling = False
     for model in config.ROLES[role]:
-        limit = config.DAILY_LIMITS[model]
         used = _used(conn, day, model)
-        if used >= limit:
+        if used >= config.DAILY_LIMITS[model]:
+            continue
+        if _cool.get(model, 0) > time.monotonic():
+            cooling = True
             continue
         _set_used(conn, day, model, used + 1)
-        client = _factory(config.PROVIDER[model])
         try:
-            resp = await client.chat.completions.create(model=model, messages=messages)
-        except openai.RateLimitError:
-            _set_used(conn, day, model, limit)
+            resp = await _client(config.PROVIDER[model]).chat.completions.create(model=model, messages=messages)
+        except openai.RateLimitError:  # per-minute limit: cool down briefly; daily limit is the local counter
+            _cool[model] = time.monotonic() + COOLDOWN_SECONDS
+            cooling = True
             continue
-        return resp.choices[0].message.content
-    raise QuotaExhausted(role)
+        return resp.choices[0].message.content or ""
+    raise QuotaExhausted(role, COOLDOWN_SECONDS if cooling else None)

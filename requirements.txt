@@ -8,6 +8,7 @@ trafilatura
 requests
 indra-ocr
 pypdfium2
+pymupdf
 openai
 tzdata
 pytest

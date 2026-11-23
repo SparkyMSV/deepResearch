@@ -188,3 +188,58 @@ def test_non_list_plan_falls_back(monkeypatch):
     env = Env(monkeypatch, plan={"subtasks": 3}, checkins=[{"decision": "sufficient"}])
     assert asyncio.run(task.run_task(env.conn, env.conv, env.task_id)) == "# Report"
     assert env.conn.execute("select objective from subtasks").fetchall()[0][0] == "obj"
+
+
+def test_pdf_reads_capped_per_subtask(monkeypatch):
+    many = lambda q: [Hit("doc", f"http://x/{q}-{i}.pdf", "", is_pdf=True) for i in range(7)]
+    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}], hits=many)
+    env.run_subtask(env.subtask())
+    assert len(env.pdf_calls) == task.MAX_PDFS_PER_SUBTASK == 5
+
+
+def test_checkin_api_error_ends_only_that_subtask(monkeypatch):
+    plan = {"subtasks": [{"objective": "a", "query": "qa"}, {"objective": "b", "query": "qb"}]}
+    resp = httpx.Response(500, request=httpx.Request("POST", "http://x"))
+    err = openai.InternalServerError("boom", response=resp, body=None)
+    env = Env(monkeypatch, plan=plan, checkins=[err, {"decision": "sufficient"}])
+    assert asyncio.run(task.run_task(env.conn, env.conv, env.task_id)) == "# Report"
+    statuses = sorted(r[0] for r in env.conn.execute("select status from subtasks"))
+    assert statuses == ["done", "partial"]
+    assert env.conn.execute("select status from tasks").fetchone()[0] == "done"
+
+
+def test_unparseable_checkin_ends_subtask_partial(monkeypatch):
+    env = Env(monkeypatch)
+
+    async def junk(role, messages, conn):
+        return "not json"
+
+    monkeypatch.setattr(task, "cloud", junk)
+    st = env.run_subtask(env.subtask())
+    assert st["status"] == "partial" and len(env.rounds(st["id"])) == 5
+
+
+def test_checkin_and_report_inputs_capped(monkeypatch):
+    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}])
+
+    async def long(hit, objective):
+        return ["x" * 20_000]
+
+    monkeypatch.setattr(task, "passages", long)
+    asyncio.run(task.run_task(env.conn, env.conv, env.task_id))
+    c, r = env.prompts["checkin"][0], env.prompts["report"][0]
+    assert len(c) <= 12_000 + 20 and c.endswith("[truncated]")
+    assert len(r) <= 60_000 + 20 and r.endswith("[truncated]")
+
+
+def test_cooldown_retry_waits_retry_after(monkeypatch):
+    env = Env(monkeypatch, checkins=[QuotaExhausted("checkin", 60), {"decision": "sufficient"}])
+    monkeypatch.setattr(task, "QUOTA_RETRY_SECONDS", 900)
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    monkeypatch.setattr(task.asyncio, "sleep", fake_sleep)
+    env.run_subtask(env.subtask())
+    assert slept == [60]

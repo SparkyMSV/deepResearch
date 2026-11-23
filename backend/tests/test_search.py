@@ -73,9 +73,9 @@ def test_fetch_truncates_large(monkeypatch):
     seen = []
     monkeypatch.setattr(search.requests, "get", fake_get(Resp(b"a" * 5_000_000)))
     monkeypatch.setattr(search.trafilatura, "extract",
-                        lambda html, **k: seen.append(len(html)) or json.dumps({"text": html[:10]}))
+                        lambda html, **k: seen.append(html) or json.dumps({"text": "x"}))
     assert search.fetch(Hit("t", "http://a", "s")) is not None
-    assert seen[0] <= 2_000_000
+    assert isinstance(seen[0], bytes) and len(seen[0]) <= 2_000_000  # raw bytes: trafilatura sniffs the charset
 
 
 def hits(n=3):

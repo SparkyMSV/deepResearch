@@ -1,5 +1,6 @@
 """Single gateway to the local MLX Qwen model: one job at a time, chat first."""
 import asyncio
+import concurrent.futures
 import itertools
 import json
 import re
@@ -13,6 +14,8 @@ CHAT, WORK = 0, 1
 _counter = itertools.count()
 _queues: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, tuple]" = weakref.WeakKeyDictionary()
 _model = None  # (model, tokenizer), loaded once per process
+# own thread so page fetches and OCR in the default executor can't delay chat turns
+_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
 
 
 def _mlx_backend(messages: list[dict], max_tokens: int) -> str:
@@ -40,7 +43,7 @@ async def _worker(q: asyncio.PriorityQueue) -> None:
         if fut.done():
             continue
         try:
-            result = await asyncio.to_thread(_backend, messages, max_tokens)
+            result = await asyncio.get_running_loop().run_in_executor(_pool, _backend, messages, max_tokens)
         except Exception as e:  # deliver to the caller, keep the worker alive
             if not fut.done():
                 fut.set_exception(e)

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from . import config, events
-from .chat import handle_message
+from .chat import _bg as _chat_bg, handle_message
 from .db import connect, insert
 from .task import _post
 
@@ -27,6 +27,10 @@ async def lifespan(app: FastAPI):
         conn.execute(f"update {t} set status='interrupted' where status in {ACTIVE}")
     conn.commit()
     yield
+    pending = [*_bg, *_chat_bg]  # message handlers and research tasks still using conn
+    for t in pending:
+        t.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
     conn.close()
 
 
