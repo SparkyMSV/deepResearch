@@ -52,4 +52,35 @@ describe('Chat', () => {
     await waitFor(() => expect(api.sendMessage).toHaveBeenCalledWith(1, 'hi'))
     expect(box.disabled).toBe(true) // POST in flight only
   })
+
+  it('task event keeps existing subtasks', async () => {
+    render(<Chat conversationId={1} />)
+    await screen.findByText('Find prices')
+    act(() => emit({ type: 'task', task: { id: 7, status: 'done', objective: 'Solar market' } }))
+    expect(screen.getByText('Find prices')).toBeTruthy()
+  })
+
+  it('subtask event before its task renders a stub', async () => {
+    render(<Chat conversationId={1} />)
+    await screen.findByText('Find prices')
+    act(() => emit({ type: 'subtask', subtask: { id: 90, task_id: 9, objective: 'Orphan step', status: 'running', round: 1, loop: 1, restarts: 0 } }))
+    expect(screen.getByText('Orphan step')).toBeTruthy()
+  })
+
+  it('duplicate round event is not duplicated', async () => {
+    render(<Chat conversationId={1} />)
+    fireEvent.click(await screen.findByText('Find prices'))
+    const round = { subtask_id: 70, loop: 1, n: 1, query: 'solar cost', hits: 4 }
+    act(() => { emit({ type: 'round', round }); emit({ type: 'round', round }) })
+    expect(screen.getAllByText(/solar cost/).length).toBe(1)
+  })
+
+  it('javascript: url is not a link', async () => {
+    render(<Chat conversationId={1} />)
+    await screen.findByText('Find prices')
+    const content = JSON.stringify([{ title: 'Bad', url: 'javascript:alert(1)', snippet: 's' }, { title: 'Good', url: 'https://a.com/x', snippet: 's' }])
+    act(() => emit({ type: 'message', message: { id: 9, role: 'assistant', content, kind: 'search_results', task_id: null } }))
+    expect(screen.queryByRole('link', { name: 'Bad' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'Good' })).toBeTruthy()
+  })
 })

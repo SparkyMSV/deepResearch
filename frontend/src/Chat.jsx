@@ -4,29 +4,36 @@ import Message from './Message.jsx'
 import TaskChecklist from './TaskChecklist.jsx'
 import ReportBlock from './ReportBlock.jsx'
 
-const upsert = (list, item) =>
-  list.some((x) => x.id === item.id) ? list.map((x) => (x.id === item.id ? { ...x, ...item } : x)) : [...list, item]
+const same = (a, b) => a.id === b.id
+const upsert = (list, item, merge = (x, y) => ({ ...x, ...y })) =>
+  list.some((x) => same(x, item)) ? list.map((x) => (same(x, item) ? merge(x, item) : x)) : [...list, item]
+const addRounds = (a = [], b = []) => [...a.filter((x) => !b.some((y) => y.loop === x.loop && y.n === x.n)), ...b]
+const mergeSub = (a, b) => ({ ...a, ...b, rounds: addRounds(a.rounds, b.rounds) })
+// Merge only the fields given; sub-tasks are upserted, never replaced.
+const mergeTask = (a, b) => ({ ...a, ...b, subtasks: (b.subtasks || []).reduce((l, s) => upsert(l, s, mergeSub), a.subtasks || []) })
+const upsertTask = (tasks, t) => upsert(tasks, { subtasks: [], ...t }, mergeTask)
 
 function applyEvent(st, ev) {
   if (ev.type === 'message') return { ...st, messages: upsert(st.messages, ev.message) }
-  if (ev.type === 'task') return { ...st, tasks: upsert(st.tasks, { subtasks: [], ...ev.task }) }
-  const tasks = st.tasks.map((t) => {
-    if (ev.type === 'subtask' && t.id === ev.subtask.task_id) return { ...t, subtasks: upsert(t.subtasks, ev.subtask) }
-    if (ev.type === 'round' && t.subtasks.some((s) => s.id === ev.round.subtask_id)) {
-      const subtasks = t.subtasks.map((s) => {
-        if (s.id !== ev.round.subtask_id) return s
-        const rounds = (s.rounds || []).filter((r) => !(r.loop === ev.round.loop && r.n === ev.round.n))
-        return { ...s, rounds: [...rounds, ev.round] }
-      })
-      return { ...t, subtasks }
-    }
-    return t
-  })
-  return { ...st, tasks }
+  if (ev.type === 'task') return { ...st, tasks: upsertTask(st.tasks, ev.task) }
+  if (ev.type === 'subtask') {
+    const sub = { rounds: st.pending[ev.subtask.id] || [], ...ev.subtask }
+    return { ...st, tasks: upsertTask(st.tasks, { id: ev.subtask.task_id, subtasks: [sub] }) }
+  }
+  if (ev.type === 'round') {
+    const r = ev.round
+    const owner = st.tasks.find((t) => t.subtasks.some((x) => x.id === r.subtask_id))
+    // Round before its sub-task: hold it until the subtask event arrives.
+    if (!owner) return { ...st, pending: { ...st.pending, [r.subtask_id]: addRounds(st.pending[r.subtask_id], [r]) } }
+    return { ...st, tasks: upsertTask(st.tasks, { id: owner.id, subtasks: [{ id: r.subtask_id, rounds: [r] }] }) }
+  }
+  return st
 }
 
+const EMPTY = { messages: [], tasks: [], pending: {} }
+
 export default function Chat({ conversationId, onSent }) {
-  const [st, setSt] = useState({ messages: [], tasks: [] })
+  const [st, setSt] = useState(EMPTY)
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const input = useRef(null)
@@ -35,13 +42,14 @@ export default function Chat({ conversationId, onSent }) {
   useEffect(() => {
     if (!conversationId) return
     let live = true
-    setSt({ messages: [], tasks: [] })
+    setSt(EMPTY)
     const unsub = subscribe(conversationId, (ev) => live && setSt((s) => applyEvent(s, ev)))
     getConversation(conversationId)
       .then((c) => live && setSt((s) => ({
-        // events that arrived during the fetch are kept; fetched rows fill in the rest
-        messages: c.messages.reduce(upsert, s.messages),
-        tasks: c.tasks.reduce((acc, t) => acc.some((x) => x.id === t.id) ? acc : [...acc, t], s.tasks),
+        // fetched rows are the base; events that arrived during the fetch go on top
+        ...s,
+        messages: s.messages.reduce((l, m) => upsert(l, m), c.messages),
+        tasks: s.tasks.reduce(upsertTask, c.tasks),
       })))
       .catch((e) => console.error('getConversation failed', e))
     input.current?.focus()

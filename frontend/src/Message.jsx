@@ -11,7 +11,7 @@ export default function Message({ m }) {
       <ol className="msg-a hits">
         {hits.map((h, i) => (
           <li key={i}>
-            <a href={h.url} target="_blank" rel="noreferrer">{h.title}</a>
+            {/^https?:\/\//i.test(h.url) ? <a href={h.url} target="_blank" rel="noreferrer">{h.title}</a> : <span>{h.title}</span>}
             <span className="muted"> {domain(h.url)}</span>
             <div className="muted">{h.snippet}</div>
           </li>
