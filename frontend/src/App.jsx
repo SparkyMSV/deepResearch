@@ -37,9 +37,13 @@ export default function App() {
   }
 
   async function newResearch() {
-    const { id } = await createConversation()
-    setActiveId(id)
-    setRefreshKey((k) => k + 1)
+    try {
+      const { id } = await createConversation()
+      setActiveId(id)
+      setRefreshKey((k) => k + 1)
+    } catch (e) {
+      console.error('createConversation failed', e)
+    }
   }
 
   return (

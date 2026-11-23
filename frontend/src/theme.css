@@ -18,10 +18,11 @@ button, input { font: inherit; color: inherit; }
 .card { width: 280px; padding: 26px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
 .fld { display: block; width: 100%; padding: 9px 11px; margin-top: 10px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); }
 .card .fld { background: var(--raised); }
-.fld:focus { outline: 1px solid var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fld:focus { outline: 2px solid var(--accent); }
 .btn { width: 100%; margin-top: 16px; padding: 9px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
 .hint { font-size: 11px; margin-top: 12px; text-align: center; }
-.err { font-size: 12px; margin-top: 10px; color: var(--accent); }
+.err { font-size: 12px; margin-top: 10px; color: var(--text); font-weight: 600; }
 
 .shell { height: 100%; display: flex; }
 .side { width: 220px; padding: 12px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; background: var(--surface); border-right: 1px solid var(--line); }
