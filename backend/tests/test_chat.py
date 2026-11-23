@@ -100,3 +100,12 @@ def test_title_set_from_first_message(monkeypatch):
     asyncio.run(chat.handle_message(env.conn, env.conv, "second"))
     title = env.conn.execute("select title from conversations").fetchone()[0]
     assert title == "a" * 60
+
+
+def test_answer_includes_latest_report(monkeypatch):
+    env = Env(monkeypatch)
+    insert(env.conn, "messages", conversation_id=env.conv, role="assistant", kind="report",
+           content="RISK-NUMBER-42 " + "x" * 7000)
+    asyncio.run(chat.handle_message(env.conn, env.conv, "what was the risk number?"))
+    sys = env.calls[-1][0]["content"]
+    assert "RISK-NUMBER-42" in sys and len(sys) < 7000

@@ -45,6 +45,12 @@ def _evidence(conn, conv_id: int, text: str) -> str:
     return "\n".join(f"[{r['url']}] {r['passage']}" for n, r in scored if n)
 
 
+def _report(conn, conv_id: int) -> str:
+    r = conn.execute("select content from messages where conversation_id=? and kind='report' "
+                     "order by id desc limit 1", (conv_id,)).fetchone()
+    return f"Latest research report (truncated):\n{r['content'][:6000]}" if r else ""
+
+
 async def _reply(conn, conv_id: int, system: str, extra: str = "") -> str:
     msgs = [{"role": "system", "content": system + ("\n\n" + extra if extra else "")}, *_history(conn, conv_id)]
     return (await qwen(msgs, priority=CHAT)).strip()
@@ -88,4 +94,6 @@ async def handle_message(conn, conv_id: int, text: str) -> None:
         _bg.add(t)
         t.add_done_callback(_bg.discard)
     else:
-        _post(conn, conv_id, None, await _reply(conn, conv_id, ANSWER_PROMPT, _evidence(conn, conv_id, text)), "text")
+        _post(conn, conv_id, None, await _reply(conn, conv_id, ANSWER_PROMPT,
+                                                "\n\n".join(x for x in (_report(conn, conv_id),
+                                                                        _evidence(conn, conv_id, text)) if x)), "text")
