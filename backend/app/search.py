@@ -1,9 +1,11 @@
 """Web search (DDG), page fetch, Qwen rerank, and verbatim passage extraction."""
 import asyncio
 import json
+import re
 import logging
 import time
 from dataclasses import replace
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 
 import requests
@@ -62,6 +64,62 @@ def fetch(hit: Hit) -> Hit | None:
     except Exception as e:
         log.info("fetch skip %s: %s after %.1fs", hit.url, type(e).__name__, time.monotonic() - t0)
         return None
+
+
+_STOP = {"limited", "ltd", "pvt", "private", "inc", "corp", "corporation", "company", "co", "plc", "llp",
+         "the", "and", "of"}
+
+
+def name_words(name: str) -> set[str]:
+    """Distinctive words of an entity name: 'Navi Finserv Limited' -> {'navi', 'finserv'}."""
+    return {w for w in re.findall(r"[a-z0-9]+", (name or "").lower()) if len(w) >= 3 and w not in _STOP}
+
+
+def _seen_text(hit: Hit) -> str:
+    return f"{hit.url} {hit.title} {hit.snippet}".lower()
+
+
+def mentions(hit: Hit, words: set[str]) -> bool:
+    """Free screen: does the URL, title or snippet name the entity?"""
+    t = _seen_text(hit)
+    return any(w in t for w in words)
+
+
+def _years(period: str) -> set[str]:
+    """'FY2023-24' -> {'2023', '2024', '23-24', 'fy24'}-style tokens that may show in a URL or title."""
+    p = (period or "").lower()
+    ys = set(re.findall(r"20\d\d", p))
+    for a, b in re.findall(r"(20\d\d)\s*[-/]\s*(\d\d)", p):
+        ys |= {"20" + b, f"{a[2:]}-{b}", f"fy{b}", f"fy{a[2:]}"}
+    ys |= {f"fy{y[2:]}" for y in list(ys) if len(y) == 4}
+    return ys
+
+
+def doc_score(hit: Hit, words: set[str], period: str, domains: list[str]) -> int:
+    t, ys = _seen_text(hit), _years(period)
+    score = 2 * sum(w in t for w in words)
+    if any(y in t for y in ys):
+        score += 2
+    elif any(y not in ys for y in re.findall(r"20\d\d", f"{hit.url} {hit.title}")):
+        score -= 2  # names another year and not ours
+    host = urlparse(hit.url).netloc.lower()
+    if any(host == d or host.endswith("." + d) for d in domains):
+        score += 1
+    return score
+
+
+def order_by_entity(hits: list[Hit], entity: str) -> list[Hit]:
+    """Hits naming the entity first; never drops any (topic entities like 'India' must still work)."""
+    words = name_words(entity)
+    return sorted(hits, key=lambda h: not mentions(h, words)) if words else list(hits)
+
+
+def window(text: str, keywords: list[str], n: int = 6000) -> str:
+    """Up to n chars of a long page, starting a little before the first keyword hit."""
+    low = text.lower()
+    hits = [i for k in keywords if k and (i := low.find(k.lower())) >= 0]
+    start = max(0, min(hits) - n // 4) if hits else 0
+    return text[start:][:n]
 
 
 def url_key(url: str) -> str:
