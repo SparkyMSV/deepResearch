@@ -258,7 +258,7 @@ async def _next(conn, st: dict, query: str, queries: list[str]) -> tuple[str, st
                  "read it; else aim the query at it (add 'pdf' or the publisher's site).")
     if docs:
         user += ("\nPDFs found in this research:\n"
-                 + "\n".join(f"[{i}] {a}; " + (f"you read {len(st["pdf_pages"][u])} page(s), more may help"
+                 + "\n".join(f"[{i}] {a}; " + (f"you read {len(st['pdf_pages'][u])} page(s), more may help"
                                                 if u in st["pdf_pages"] else "not read by you")
                               for i, (u, a) in enumerate(docs))
                  + '\nIf one likely has the missing facts, reply {"read":N} (reads pages not read yet). Otherwise '
