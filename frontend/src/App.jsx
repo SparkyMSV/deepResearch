@@ -3,7 +3,6 @@ import Login from './Login.jsx'
 import ThemeToggle from './ThemeToggle.jsx'
 import Sidebar from './Sidebar.jsx'
 import Chat from './Chat.jsx'
-import { createConversation } from './api.js'
 
 // localStorage/sessionStorage can throw (private mode); never let that break the UI.
 const read = (store, key) => { try { return window[store].getItem(key) } catch { return null } }
@@ -37,15 +36,10 @@ export default function App() {
     )
   }
 
-  async function newResearch() {
-    try {
-      const { id } = await createConversation()
-      setActiveId(id)
-      setRefreshKey((k) => k + 1)
-    } catch (e) {
-      console.error('createConversation failed', e)
-    }
-  }
+  // New research = back to the landing chat; the conversation is created on its first message.
+  const newResearch = () => setActiveId(null)
+  const onCreated = (id) => { setActiveId(id); setRefreshKey((k) => k + 1) }
+  const onDeleted = (id) => { if (id === activeId) setActiveId(null); setRefreshKey((k) => k + 1) }
 
   // The backend titles a conversation on its first message; refetch the sidebar then and again shortly after.
   function onSent() {
@@ -55,9 +49,9 @@ export default function App() {
 
   return (
     <div className="shell">
-      <Sidebar activeId={activeId} onSelect={setActiveId} onNew={newResearch} theme={theme} onToggleTheme={toggleTheme} refreshKey={refreshKey} />
+      <Sidebar activeId={activeId} onSelect={setActiveId} onNew={newResearch} onDeleted={onDeleted} theme={theme} onToggleTheme={toggleTheme} refreshKey={refreshKey} />
       <main className="main">
-        <Chat conversationId={activeId} onSent={onSent} />
+        <Chat conversationId={activeId} onSent={onSent} onCreated={onCreated} />
       </main>
     </div>
   )

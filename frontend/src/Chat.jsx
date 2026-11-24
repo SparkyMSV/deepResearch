@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getConversation, sendMessage, subscribe } from './api.js'
+import { createConversation, getConversation, sendMessage, subscribe } from './api.js'
 import Message from './Message.jsx'
 import TaskChecklist from './TaskChecklist.jsx'
 import ReportBlock from './ReportBlock.jsx'
@@ -39,13 +39,25 @@ function applyEvent(st, ev) {
 
 const EMPTY = { messages: [], tasks: [], pending: {}, status: null, draft: '' }
 
-export default function Chat({ conversationId, onSent }) {
+const SUGGESTIONS = [
+  'search: latest RBI repo rate decision',
+  "task: How investable are Tata Steel's bonds? Build a credit view",
+  'What can you help me research?',
+]
+
+function greeting() {
+  const h = new Date().getHours()
+  return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'
+}
+
+export default function Chat({ conversationId, onSent, onCreated }) {
   const [st, setSt] = useState(EMPTY)
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [err, setErr] = useState('')
   const input = useRef(null)
   const end = useRef(null)
+  const firstMessage = useRef(null)  // typed on the landing view; sent once the new conversation's stream is ready
 
   useEffect(() => {
     if (!conversationId) return
@@ -60,7 +72,22 @@ export default function Chat({ conversationId, onSent }) {
         tasks: s.tasks.reduce(upsertTask, c.tasks),
       })))
       .catch((e) => console.error('getConversation failed', e))
-    const unsub = subscribe(conversationId, (ev) => live && setSt((s) => applyEvent(s, ev)), load)
+    const onEvent = (ev) => {
+      if (!live) return
+      if (ev.type === 'ready' && firstMessage.current) {
+        const t = firstMessage.current
+        firstMessage.current = null
+        setSt((s) => ({ ...s, status: 'thinking' }))
+        sendMessage(conversationId, t).then(() => onSent?.()).catch((e) => {
+          console.error('sendMessage failed', e)
+          setText(t)
+          setSt((s) => ({ ...s, status: null }))
+          setErr('Message not sent — check the connection and try again.')
+        })
+      }
+      setSt((s) => applyEvent(s, ev))
+    }
+    const unsub = subscribe(conversationId, onEvent, load)
     load()
     input.current?.focus()
     return () => { live = false; unsub() }
@@ -68,13 +95,25 @@ export default function Chat({ conversationId, onSent }) {
 
   useEffect(() => { end.current?.scrollIntoView?.({ block: 'end' }) }, [st.messages.length, st.draft, st.status])
 
-  if (!conversationId) return <div className="empty muted">Select or start a research</div>
-
   async function send() {
     const t = text.trim()
     if (!t || sending) return
     setSending(true)
     setErr('')
+    if (!conversationId) {  // landing view: create the conversation, send when its stream is live
+      try {
+        const { id } = await createConversation()
+        firstMessage.current = t
+        setText('')
+        onCreated?.(id)
+      } catch (e) {
+        console.error('createConversation failed', e)
+        setErr('Could not start a conversation — is the backend running?')
+      } finally {
+        setSending(false)
+      }
+      return
+    }
     try {
       await sendMessage(conversationId, t)
       setText('')
@@ -88,6 +127,36 @@ export default function Chat({ conversationId, onSent }) {
       setSending(false)
       input.current?.focus()
     }
+  }
+
+  const composer = (
+    <>
+      {err && <div className="send-err muted" role="alert">{err}</div>}
+      <div className="bar">
+        <textarea
+          ref={input} className="inp" rows={1} aria-label="Message" value={text} disabled={sending}
+          placeholder="Ask anything — prefix with search: or task: to force a mode"
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+        />
+        <button className="send" onClick={send} disabled={sending || !text.trim()} aria-label="Send">↑</button>
+      </div>
+    </>
+  )
+
+  if (!conversationId) {
+    return (
+      <div className="home">
+        <h1 className="greet">{greeting()}</h1>
+        <p className="muted">Ask anything. Start with <code>search:</code> for a quick lookup or <code>task:</code> for a deep, cited report.</p>
+        <div className="home-box">{composer}</div>
+        <div className="chips">
+          {SUGGESTIONS.map((q) => (
+            <button key={q} className="chip" onClick={() => { setText(q); input.current?.focus() }}>{q}</button>
+          ))}
+        </div>
+      </div>
+    )
   }
 
   // Checklist goes under the first message of its task (the "Planning…" line), else at the end.
@@ -114,16 +183,7 @@ export default function Chat({ conversationId, onSent }) {
           : st.status && <Busy phase={st.status} />}
         <div ref={end} />
       </div>
-      {err && <div className="send-err muted" role="alert">{err}</div>}
-      <div className="bar">
-        <textarea
-          ref={input} className="inp" rows={1} aria-label="Message" value={text} disabled={sending}
-          placeholder="Ask anything — prefix with search: or task: to force a mode"
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-        />
-        <button className="send" onClick={send} disabled={sending || !text.trim()} aria-label="Send">↑</button>
-      </div>
+      {composer}
     </>
   )
 }

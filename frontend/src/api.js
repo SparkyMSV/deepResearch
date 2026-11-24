@@ -26,6 +26,7 @@ export const listConversations = () => json('/conversations')
 export const createConversation = () => post('/conversations', {}).then((r) => r.json())
 export const getConversation = (id) => json(`/conversations/${id}`)
 export const sendMessage = (id, text) => post(`/conversations/${id}/messages`, { text })
+export const deleteConversation = (id) => req(`/conversations/${id}`, { method: 'DELETE' })
 
 // onReconnect runs when the stream reopens after an error: events sent meanwhile were missed.
 export function subscribe(id, onEvent, onReconnect) {

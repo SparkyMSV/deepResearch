@@ -112,10 +112,29 @@ async def post_message(cid: int, body: Msg):
     if not conn.execute("select 1 from conversations where id=?", (cid,)).fetchone():
         raise HTTPException(404, "not found")
     # handle_message stores the user message and sets the title itself
-    t = asyncio.create_task(_run(conn, cid, text))
+    t = asyncio.create_task(_run(conn, cid, text), name=f"conv-{cid}")  # name lets delete find it
     _bg.add(t)
     t.add_done_callback(_bg.discard)
     return {"accepted": True}
+
+
+@app.delete("/api/conversations/{cid}", status_code=204)
+async def delete_conversation(cid: int):
+    conn = app.state.conn
+    if not conn.execute("select 1 from conversations where id=?", (cid,)).fetchone():
+        raise HTTPException(404, "not found")
+    running = [t for t in (*_bg, *_chat_bg) if t.get_name() == f"conv-{cid}"]
+    for t in running:  # stop its message handling and research before the rows go
+        t.cancel()
+    await asyncio.gather(*running, return_exceptions=True)
+    tasks = "select id from tasks where conversation_id=?"
+    subs = f"select id from subtasks where task_id in ({tasks})"
+    for sql in (f"delete from evidence where subtask_id in ({subs})", f"delete from rounds where subtask_id in ({subs})",
+                f"delete from subtasks where task_id in ({tasks})", "delete from tasks where conversation_id=?",
+                "delete from messages where conversation_id=?", "delete from conversations where id=?"):
+        conn.execute(sql, (cid,))
+    conn.commit()
+    log.info("deleted conversation %s (stopped %d running job(s))", cid, len(running))
 
 
 @app.get("/api/conversations/{cid}/events")
@@ -123,6 +142,8 @@ async def stream(cid: int):
     async def gen():
         q = events.subscribe(cid)
         try:
+            # tells the client the subscription is live, so a first message sent now won't miss events
+            yield {"data": json.dumps({"type": "ready"})}
             while True:
                 yield {"data": json.dumps(await q.get())}
         finally:

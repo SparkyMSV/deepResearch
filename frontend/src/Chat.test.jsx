@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 let emit, reconnect
 vi.mock('./api.js', () => ({
   getConversation: vi.fn(),
+  createConversation: vi.fn(),
   sendMessage: vi.fn(() => new Promise(() => {})),
   subscribe: vi.fn((id, cb, onReconnect) => { emit = cb; reconnect = onReconnect; return () => {} }),
 }))
@@ -120,5 +121,24 @@ describe('Chat', () => {
     expect(screen.getByText('Hello there')).toBeTruthy()
     expect(screen.queryByText('Hello')).toBeNull()
     expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('landing view: chat box first, conversation created on send, message sent once the stream is ready', async () => {
+    api.createConversation.mockResolvedValueOnce({ id: 42 })
+    api.sendMessage.mockResolvedValueOnce({})
+    const onCreated = vi.fn()
+    const { rerender } = render(<Chat conversationId={null} onCreated={onCreated} />)
+    expect(screen.getByRole('heading').textContent).toMatch(/Good (morning|afternoon|evening)/)
+    expect(screen.queryByText(/Select or start/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /search: latest RBI/ }))
+    const box = screen.getByRole('textbox', { name: 'Message' })
+    expect(box.value).toMatch(/^search: latest RBI/)
+    fireEvent.change(box, { target: { value: 'hello there' } })
+    await act(async () => fireEvent.keyDown(box, { key: 'Enter' }))
+    expect(onCreated).toHaveBeenCalledWith(42)
+    expect(api.sendMessage).not.toHaveBeenCalledWith(42, 'hello there')
+    rerender(<Chat conversationId={42} onCreated={onCreated} />)
+    await act(async () => emit({ type: 'ready' }))
+    expect(api.sendMessage).toHaveBeenCalledWith(42, 'hello there')
   })
 })

@@ -135,7 +135,7 @@ async def _handle(conn, conv_id: int, text: str) -> None:
         log.info("task %s created; running in the background", tid)
         msgs = [{"role": "system", "content": PROGRESS_PROMPT}, {"role": "user", "content": query}]
         _post(conn, conv_id, tid, (await qwen(msgs, priority=CHAT, max_tokens=60)).strip() or "Planning…", "progress")
-        t = asyncio.create_task(_run_and_summarize(conn, conv_id, tid))
+        t = asyncio.create_task(_run_and_summarize(conn, conv_id, tid), name=f"conv-{conv_id}")
         _bg.add(t)
         t.add_done_callback(_bg.discard)
     else:
