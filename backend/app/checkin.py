@@ -80,7 +80,7 @@ async def review(ctx, sub, allow_reopen: bool, ask) -> str | None:
         if act == "accept" and f["status"] == "found":
             ctx.set_field(f, accepted=1)
         elif act == "unavailable":
-            ctx.set_field(f, status="unavailable", accepted=0, note=str(a.get("note") or "not publicly available"))
+            ctx.set_field(f, status="unavailable", accepted=1, note=str(a.get("note") or "not publicly available"))
         elif act == "reject" and reopen(f"reject {f['name']}"):
             ctx.set_field(f, status="open", accepted=0, value=None, unit=None, reported_period=None, source_url=None,
                           source_key=None, page=None, quote=None, source_kind=None, note=a.get("note"))

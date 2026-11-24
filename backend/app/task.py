@@ -85,7 +85,8 @@ def _ask(system: str, user: str) -> list[dict]:
 
 
 def _closed(f: dict) -> bool:
-    return bool(f["accepted"]) or f["status"] == "unavailable"
+    """Closed means a check-in accepted the value or confirmed it is not public."""
+    return bool(f["accepted"])
 
 
 async def run_task(conn, conv_id: int, task_id: int) -> str:

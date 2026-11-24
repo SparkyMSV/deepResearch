@@ -43,7 +43,7 @@ def test_accept_reject_unavailable_retry(env):
     assert asyncio.run(checkin.review(c, sub, True, ask)) == "reopened"
     assert f(c, "A")["accepted"] == 1
     assert (f(c, "B")["status"], f(c, "B")["value"]) == ("open", None)
-    assert (f(c, "C")["status"], f(c, "C")["note"]) == ("unavailable", "not disclosed")
+    assert (f(c, "C")["status"], f(c, "C")["note"], f(c, "C")["accepted"]) == ("unavailable", "not disclosed", 1)
     assert (f(c, "D")["status"], f(c, "D")["hint"], f(c, "D")["search"]) == ("open", "see notes", "E D FY26")
     assert 'quote: "q"' in ask.msgs[1]["content"]
 

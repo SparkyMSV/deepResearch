@@ -40,11 +40,12 @@ async def choose(ctx, sub, field: dict) -> tuple[str, str | None]:
     opts = [f" [{d['key']}] {d['about'] or d['name']} — covers {d['covers'] or '?'} ({d['pages'] or '?'} pp) — "
             + (f"read {page_ranges(sub['read'][d['key']])}" if sub["read"].get(d["key"]) else "not read")
             for d in docs]
-    prompt = (f"Field: {_field_line(field)}\n" + (f"Hint: {field['hint']}\n" if field.get("hint") else "")
+    prompt = (f"Today is {ctx.today}.\nField: {_field_line(field)}\n" + (f"Hint: {field['hint']}\n" if field.get("hint") else "")
               + (f"Also open: {', '.join(others)}\n" if others else "")
               + f"Tried: {'; '.join(tried) or 'nothing yet'}\nOptions:\n" + "\n".join(opts + [" [S] web search",
                                                                                          " [X] not public"])
               # the example names a real listed document: a small model copies example keys verbatim
+              + "\nPick X only after reading documents and searching, if the value is truly not published."
               + "\nReply JSON only: " + (f'{{"do":"{docs[0]["key"]}"}} or ' if docs else "")
               + '{"do":"S","query":"..."} or {"do":"X","why":"..."}')
     keys = {d["key"] for d in docs}

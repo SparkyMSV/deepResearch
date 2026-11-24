@@ -40,7 +40,7 @@ async def read_page(ctx, sub, text: str, source: dict, nav: bool) -> tuple[list[
     listing = "\n".join(f"[{i}] {f['name']} ({f['entity'] or 'any'}, {f['period']})" for i, f in enumerate(want, 1))
     reply = ('{"found":[{"field":1,"value":"...","unit":"...","period":"...","quote":"exact words from the page"}]'
              + (',"next":<page number>|"contents"|"leave"}' if nav else "}"))
-    prompt = (f"{_label(source)}. Looking for:\n{listing}\nOnly values for that entity and period. "
+    prompt = (f"Today is {ctx.today}. {_label(source)}. Looking for:\n{listing}\nOnly values for that entity and period. "
               f"Value without its unit; unit separately. Quote the page exactly.\n\n{text[:PAGE_CHARS].strip() or '(no text on this page)'}\n\n"
               f"Reply JSON only: {reply}. Use an empty list if nothing is here.")
     d = None

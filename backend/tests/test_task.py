@@ -95,7 +95,7 @@ def test_focus_rotates_after_three_stalls(monkeypatch):
     env = Env(monkeypatch, qwen_rules=[("Options:", counter())])
     sid = env.subtask("A", "B")
     env.run_subtask(sid)
-    focus = [p.split("\n")[0].split(" · ")[0] for p in env.qwen.prompts if p.startswith("Field:")]
+    focus = [ln.split(" · ")[0] for p in env.qwen.prompts for ln in p.split("\n") if ln.startswith("Field:")]
     assert focus[:6] == ["Field: A"] * 3 + ["Field: B"] * 3
     assert len(env.prompts["checkin"]) == 1  # both fields stalled -> one check-in, which ends it
 
@@ -143,6 +143,17 @@ def test_qwen_not_public_then_confirmed(monkeypatch):
     sid = env.subtask()
     assert env.run_subtask(sid)["status"] == "done"
     assert env.rounds(sid)[0]["query"] == "Gross NPA %: not public (not disclosed)"
+    assert len(env.prompts["checkin"]) == 1  # Qwen's "not public" closes nothing until a check-in confirms it
+
+
+def test_qwen_not_public_rejected_by_checkin_reopens(monkeypatch):
+    env = Env(monkeypatch, checkins=[{"fields": [{"name": "Gross NPA %", "action": "retry", "hint": "see CARE"}]},
+                                     {"fields": [{"name": "Gross NPA %", "action": "unavailable"}]}],
+              qwen_rules=[("Options:", [{"do": "X", "why": "future"}, {"do": "S", "query": "navi gnpa care"},
+                                        {"do": "X", "why": "none"}])])
+    sid = env.subtask()
+    assert env.run_subtask(sid)["status"] == "done" and len(env.prompts["checkin"]) == 2
+    assert any("Today is 2026-11-24" in p for p in env.qwen.prompts)
 
 
 def test_report_input_marks_unreviewed_and_gaps(monkeypatch):

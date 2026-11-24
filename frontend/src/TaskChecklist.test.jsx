@@ -55,7 +55,7 @@ describe('TaskChecklist', () => {
     const fields = [
       { id: 1, subtask_id: 2, name: 'Gross NPA %', period: 'FY26', status: 'found', accepted: 1, value: '2.1', unit: '%', source_key: 'D1', page: 112 },
       { id: 2, subtask_id: 2, name: 'Net NPA %', period: 'FY26', status: 'found', accepted: 0, value: '0.9', unit: '%', source_url: 'https://news.com/a' },
-      { id: 3, subtask_id: 2, name: 'PCR %', period: 'FY26', status: 'unavailable', accepted: 0, note: 'not disclosed' },
+      { id: 3, subtask_id: 2, name: 'PCR %', period: 'FY26', status: 'unavailable', accepted: 1, note: 'not disclosed' },
       { id: 4, subtask_id: 2, name: 'CRAR %', period: 'FY26', status: 'open', accepted: 0 },
     ]
     render(<TaskChecklist task={{ ...task('running', [sub({})]), fields }} />)
