@@ -12,35 +12,41 @@ PDFs to answer research questions. Everything else in this repo exists to make t
 
 FastAPI backend in `backend/`, React + Vite frontend in `frontend/`.
 
-## How it works today
+## How it works
 
 1. **Chat.** Qwen reads each message and either answers, runs a quick web search (`search:`), or starts a
    research task (`task:`). Replies stream token by token.
-2. **Plan.** A larger model splits the research into sub-tasks (at most `DR_MAX_SUBTASKS`) and names
-   documents worth finding, such as an annual report.
-3. **Explore.** Each sub-task runs rounds. In a round Qwen either searches the web or reads a PDF that any
-   sub-task has already found:
-   - Web: DuckDuckGo returns results, every page is fetched, Qwen ranks them and copies relevant passages
-     word for word (passages not found verbatim on the page are dropped).
-   - PDFs: indra-ocr turns pages into text; only text is sent to models. A larger model picks pages from
-     the contents and pulls figures with page numbers. Every PDF read is shared with the other sub-tasks
-     with a one-line note on what it is, and a sub-task can go back for more pages.
-   - After each round Qwen picks the next step: read a shared PDF, or write a new search. Searches that
-     repeat or nearly repeat earlier ones (80% shared words) are refused.
-4. **Check in.** Every 5 rounds a larger model reviews the evidence and decides: continue, done, or
-   restart with a better search and objective.
-5. **Report.** A larger model writes a cited report (URL or PDF page, plus date, for each figure), then
-   Qwen adds a short summary in chat.
+2. **Plan (larger model).** Given today's date, it turns the request into a checklist of **fields**: specific
+   figures or short facts, each for a named entity and period (e.g. "Gross NPA %, Navi Finserv, FY2025-26"),
+   grouped into sub-tasks, with starting searches, hints on where each value usually appears, and the
+   **documents** worth finding (annual reports, filings, rating rationales).
+3. **Documents (once per research).** Each planned document is searched for. Candidates whose URL, title
+   and DuckDuckGo snippet don't name the company are dropped for free; for the best three, indra-ocr turns
+   page 1 into text and Qwen checks it is the right document. Verified PDFs are shared with every sub-task.
+4. **Explore (Qwen).** Each sub-task works on one open field at a time. Every step is one small Qwen
+   decision with a compact view (the field, a hint, what was tried, a short menu):
+   - **Read a document**: Qwen sees its contents list, picks a section or page, and reads page by page
+     (up to 6 per visit). Pages are OCR'd on demand and cached for the whole research. Printed page
+     numbers are mapped to real PDF pages.
+   - **Search the web**: Qwen sees each result's URL, title and snippet and opens up to three.
+   - **Not public**: Qwen can say a value isn't publicly available.
+   On every page Qwen reports values for any open field with an exact quote; values whose quote isn't on
+   the page are dropped. Document values outrank web values. After 3 steps without progress, focus
+   moves to the next field.
+5. **Check in (larger model).** Every 5 steps, when stuck, or when everything is filled, the larger model
+   reviews the fields table: accept, reject, not public, or retry with a hint or new search; it can add
+   fields or ask for another document.
+6. **Report (larger model).** Written from the fields table, with figures in tables, sources with pages,
+   and a Gaps section. Qwen adds a short summary in chat, and follow-up questions can use the fields.
+
+Guardrails in code: no repeat or near-repeat searches (80% shared words), no re-reading pages or URLs,
+verbatim quotes, page budget (`DR_MAX_PAGES`), step and restart limits.
 
 ## Roadmap
 
-- **Redesign: Qwen explores PDFs itself** (design:
-  `docs/superpowers/specs/2026-11-24-field-checklist-redesign-design.md`, awaiting approval). The plan
-  becomes a checklist of specific fields (figure, entity, period). Qwen reads PDFs page by page from their
-  contents and fills fields with exact quotes. The larger model only plans, reviews a fields table, and
-  writes the report.
 - **Optimise Qwen on the MacBook.** Make the local model faster and lighter: prompt caching, batching,
-  quantisation and context-length choices, and measuring time per call.
+  quantisation and context-length choices, and measuring time per call. The harness makes many small
+  Qwen calls, so this matters.
 - **Document/OCR retrieval.** Revisit how information is retrieved from documents, and the OCR step
   with it.
 
@@ -56,11 +62,12 @@ FastAPI backend in `backend/`, React + Vite frontend in `frontend/`.
 ## Setup
 Copy `.env.example` to `.env` and fill in:
 - `GEMINI_API_KEY`, `GROQ_API_KEY`
-- Optional limits (defaults): `DR_MAX_SUBTASKS=8`, `DR_ROUNDS_PER_LOOP=20`, `DR_MAX_RESTARTS=2`,
+- Optional limits (defaults): `DR_MAX_SUBTASKS=8`, `DR_ROUNDS_PER_LOOP=20` (Qwen steps per loop),
+  `DR_MAX_RESTARTS=2` (check-ins that may reopen work), `DR_MAX_PAGES=150` (pages Qwen may read per research),
   `DR_SEARCH_MAX_RESULTS=8` (DuckDuckGo results per search; every one is fetched and read, so higher =
   slower rounds), `DR_SEARCH_REGION=us-en` (`in-en` India, `uk-en`, `wt-wt` no region)
 - Optional: `DR_DB` (SQLite path, default `data/dr.sqlite`)
-- Logs: every step (search URLs, fetches, Qwen's choices, PDF reads, cloud calls, check-ins) goes to the
+- Logs: every step (plan fields, document checks, each Qwen choice and reply, pages read, values filled, check-in actions, cloud calls) goes to the
   terminal and `logs/dr.log` (rotating, 5 × 5 MB), each line tagged `[c<conversation> t<task> s<sub-task>]`.
   `DR_LOG_LEVEL=DEBUG` adds prompt and reply previews; `DR_LOG_FILE` changes the path.
 
@@ -81,9 +88,11 @@ cd frontend && npm run dev                                             # then op
 Demo login: `analyst@demo` / `password`. The first message loads the local model, so it is slow.
 
 ## Limits and failure handling
-- Each sub-task makes at most 5 PDF reads; a loop runs at most `DR_ROUNDS_PER_LOOP` rounds and
-  `DR_MAX_RESTARTS` caps restarts, after which the sub-task ends `partial`.
-- Cloud fallbacks: Gemini Flash-Lite → the other Flash-Lite → Groq Qwen 27B. Rate limits (429), overload
+- A research with 7 sub-tasks can take 30–60 minutes: every page goes through the 4B model on the Mac.
+  It makes only about 20–35 Gemini/Groq calls (plan, check-ins, report).
+- A sub-task runs up to `DR_ROUNDS_PER_LOOP` steps per loop; a check-in that reopens work starts a new
+  loop, at most `DR_MAX_RESTARTS` times; then it ends `partial`, and its unreviewed values are marked so.
+- Cloud fallbacks: Gemini Flash-Lite → Groq Qwen 27B (check-ins: Groq first, then Gemini). Rate limits (429), overload
   (5xx) and timeouts cool a model down for 60 s and try the next; the chat says when it switches from
   Gemini to Groq. If every model is unavailable the research pauses, says so, and retries (every minute,
   or every 15 minutes once daily quotas are used up; they reset at midnight Pacific). A bad API key stops
