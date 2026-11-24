@@ -49,8 +49,7 @@ CHECKIN_EVERY = 5
 ROUNDS_PER_LOOP = _positive_int("DR_ROUNDS_PER_LOOP", 20)
 MAX_RESTARTS = _positive_int("DR_MAX_RESTARTS", 2)
 
-SEARCH_MAX_RESULTS = 8
-FETCH_TOP = 5
+SEARCH_MAX_RESULTS = _positive_int("DR_SEARCH_MAX_RESULTS", 8)  # every result is fetched and read
 FETCH_TIMEOUT = 15
 FETCH_MAX_BYTES = 2_000_000
 

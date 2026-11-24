@@ -53,7 +53,7 @@ def fetch(hit: Hit) -> Hit | None:
 
 async def search(query: str, objective: str, priority: int = WORK) -> list[Hit]:
     found = await asyncio.to_thread(ddg, query)
-    fetched = await asyncio.gather(*(asyncio.to_thread(fetch, h) for h in found[:config.FETCH_TOP]))
+    fetched = await asyncio.gather(*(asyncio.to_thread(fetch, h) for h in found))
     hits = [h for h in fetched if h]
     if len(hits) < 2:
         return hits

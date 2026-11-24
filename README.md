@@ -12,7 +12,7 @@ FastAPI backend in `backend/`, React + Vite frontend in `frontend/`.
 ## Setup
 Copy `.env.example` to `.env` and fill in:
 - `GEMINI_API_KEY`, `GROQ_API_KEY`
-- Optional limits (defaults): `DR_MAX_SUBTASKS=8`, `DR_ROUNDS_PER_LOOP=20`, `DR_MAX_RESTARTS=2`
+- Optional limits (defaults): `DR_MAX_SUBTASKS=8`, `DR_ROUNDS_PER_LOOP=20`, `DR_MAX_RESTARTS=2`, `DR_SEARCH_MAX_RESULTS=8` (DuckDuckGo results per search; every one is fetched and read, so higher = slower rounds)
 - Optional: `DR_DB` (SQLite path, default `data/dr.sqlite`)
 
 ### Verify model IDs (once, after adding keys)

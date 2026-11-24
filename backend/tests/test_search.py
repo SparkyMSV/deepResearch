@@ -118,3 +118,17 @@ def test_passages_must_be_verbatim(monkeypatch):
 
     monkeypatch.setattr(search, "qwen", bad)
     assert asyncio.run(search.passages(h, "obj")) == []
+
+
+def test_search_fetches_every_result(monkeypatch):
+    hs = [Hit(f"t{i}", f"http://u{i}", "s") for i in range(12)]
+    fetched = []
+    monkeypatch.setattr(search, "ddg", lambda q: hs)
+    monkeypatch.setattr(search, "fetch", lambda h: fetched.append(h) or h)
+
+    async def keep_all(messages, priority=1, max_tokens=800):
+        return '{"keep":[%s]}' % ",".join(map(str, range(12)))
+
+    monkeypatch.setattr(search, "qwen", keep_all)
+    out = asyncio.run(search.search("q", "obj"))
+    assert len(fetched) == 12 and len(out) == 12
