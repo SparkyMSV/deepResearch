@@ -92,3 +92,18 @@ def test_page_counts_against_budget_and_empty_page_shown(env, monkeypatch):
     q = use(monkeypatch, found())
     asyncio.run(fields.read_page(c, sub, "", DOC, nav=True))
     assert c.pages_used == 1 and "(no text on this page)" in q.prompts[0]
+
+
+def test_bare_empty_list_means_nothing_here_keep_reading(env, monkeypatch):
+    c, sub = env
+    q = use(monkeypatch, "[]")
+    assert asyncio.run(fields.read_page(c, sub, PAGE, DOC, nav=True)) == ([], 113)
+    assert len(q.prompts) == 1 and '{"found":[]' in q.prompts[0]
+
+
+def test_rejected_quote_is_logged(env, monkeypatch, caplog):
+    c, sub = env
+    use(monkeypatch, found((1, "2.1", "GNPA stood at 2.1 percent")))
+    with caplog.at_level("INFO", logger="app.fields"):
+        asyncio.run(fields.read_page(c, sub, PAGE, DOC, nav=False))
+    assert "GNPA stood at 2.1 percent" in caplog.text

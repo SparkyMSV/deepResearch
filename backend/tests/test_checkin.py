@@ -85,3 +85,7 @@ def test_unparseable_or_api_error_returns_none(env):
 
     assert asyncio.run(checkin.review(c, sub, True, junk)) is None
     assert asyncio.run(checkin.review(c, sub, True, down)) is None
+
+
+def test_prompt_says_document_issuer_is_the_rated_company():
+    assert "the rated company, not the agency" in checkin.CHECKIN_PROMPT

@@ -142,3 +142,21 @@ def test_leaving_without_reading_sets_the_document_aside(monkeypatch):
     c, sub = make(monkeypatch, store, ScriptedQwen(("Contents:", {"leave": True})))
     verified(c, NAVI, 20)
     assert asyncio.run(docs.visit(c, sub, "D1")) == 0 and "D1" in sub["done_docs"]
+
+
+def test_no_contents_page_offers_pages_and_stray_open_reads_first_unread(monkeypatch):
+    store = FakeStore({NAVI: [f"p{i}" for i in range(1, 21)]})  # no contents entries
+    q = ScriptedQwen(("Opening lines:", {"open": 1}), ("Looking for", {"found": [], "next": "leave"}))
+    c, sub = make(monkeypatch, store, q)
+    verified(c, NAVI, 20)
+    assert asyncio.run(docs.visit(c, sub, "D1")) == 1 and sub["read"]["D1"] == {1}
+    assert '{"page":2}' in q.prompts[0] and '"open"' not in q.prompts[0]
+
+
+def test_verdict_for_one_company_does_not_block_another(monkeypatch):
+    store = FakeStore({NAVI: ["CARE Ratings: Navi Finserv Limited " * 20]})
+    q = ScriptedQwen(("about CRISIL", {"match": False}), ("about Navi Finserv", {"match": True, "about": "CARE"}))
+    c, _ = make(monkeypatch, store, q)
+    t = {"type": "rating rationale", "period": "FY26"}
+    assert asyncio.run(docs.verify(c, NAVI, {"issuer": "CRISIL", **t})) is None
+    assert asyncio.run(docs.verify(c, NAVI, {"issuer": "Navi Finserv Limited", **t}))["about"] == "CARE"

@@ -18,7 +18,8 @@ CHECKIN_PROMPT = (
     "You review a small model's research. For each field decide: accept (value fits the entity and period and "
     "the quote supports it), reject (wrong or unsupported; it will be searched again), unavailable (not publicly "
     "available; say why in note) or retry (keep looking; give a hint on where to look and/or a new search). "
-    "You may add up to 3 missing fields, or ask for one more document to find. Reply with JSON only: "
+    "You may add up to 3 missing fields, or ask for one more document to find; its issuer is the company it is "
+    "about (for a rating rationale, the rated company, not the agency). Reply with JSON only: "
     '{"fields":[{"name":"...","action":"accept|reject|unavailable|retry","hint":"...","search":"...","note":"..."}],'
     '"add_fields":[{"name":"...","entity":"...","period":"...","kind":"figure|fact","search":"...","hint":"..."}],'
     '"find_document":{"name":"...","issuer":"...","type":"...","period":"...","search":"..."}}'

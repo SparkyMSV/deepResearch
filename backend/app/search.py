@@ -75,6 +75,12 @@ def name_words(name: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", (name or "").lower()) if len(w) >= 3 and w not in _STOP}
 
 
+def key_word(name: str) -> str | None:
+    """The first distinctive word, usually the brand: 'Navi Finserv Limited' -> 'navi'. Matching any word
+    would let 'Bajaj Finserv' pass for Navi Finserv."""
+    return next((w for w in re.findall(r"[a-z0-9]+", (name or "").lower()) if len(w) >= 3 and w not in _STOP), None)
+
+
 def _seen_text(hit: Hit) -> str:
     return f"{hit.url} {hit.title} {hit.snippet}".lower()
 
@@ -110,8 +116,8 @@ def doc_score(hit: Hit, words: set[str], period: str, domains: list[str]) -> int
 
 def order_by_entity(hits: list[Hit], entity: str) -> list[Hit]:
     """Hits naming the entity first; never drops any (topic entities like 'India' must still work)."""
-    words = name_words(entity)
-    return sorted(hits, key=lambda h: not mentions(h, words)) if words else list(hits)
+    w = key_word(entity)
+    return sorted(hits, key=lambda h: not mentions(h, {w})) if w else list(hits)
 
 
 def window(text: str, keywords: list[str], n: int = 6000) -> str:

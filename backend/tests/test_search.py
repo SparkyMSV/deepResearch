@@ -204,3 +204,10 @@ def test_window_centres_on_keyword():
     w = search.window(text, ["gross npa"], 6000)
     assert "Gross NPA was 2%" in w and len(w) == 6000
     assert search.window("short", ["none"]) == "short"
+
+
+def test_screen_uses_the_brand_word_not_any_word():
+    bajaj = Hit("Bajaj Finserv", "https://www.bajajfinserv.in/", "Bajaj Finserv loans")
+    navi = Hit("Navi results", "https://navi.com/r", "")
+    assert search.key_word("Navi Finserv Limited") == "navi"
+    assert search.order_by_entity([bajaj, navi], "Navi Finserv Limited") == [navi, bajaj]

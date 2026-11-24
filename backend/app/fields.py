@@ -1,4 +1,5 @@
 """Qwen reads one page (PDF or web) and fills open fields, each value backed by a verbatim quote."""
+import json
 import logging
 
 from app.db import insert
@@ -42,12 +43,14 @@ async def read_page(ctx, sub, text: str, source: dict, nav: bool) -> tuple[list[
              + (',"next":<page number>|"contents"|"leave"}' if nav else "}"))
     prompt = (f"Today is {ctx.today}. {_label(source)}. Looking for:\n{listing}\nOnly values for that entity and period. "
               f"Value without its unit; unit separately. Quote the page exactly.\n\n{text[:PAGE_CHARS].strip() or '(no text on this page)'}\n\n"
-              f"Reply JSON only: {reply}. Use an empty list if nothing is here.")
+              f'Reply JSON only: {reply}. If nothing is here: {{"found":[]' + (',"next":"..."}' if nav else "}"))
     d = None
     for attempt in range(2):
         raw = await qwen([{"role": "user", "content": prompt if not attempt else prompt + "\nReply with JSON only."}],
                          priority=WORK)
-        d = parse_json(raw)
+        d = parse_json(raw) or _bare_list(raw)
+        if isinstance(d, list):  # a bare list is the found items ([] = nothing here); keep reading on
+            d = {"found": d, "next": source["page"] + 1 if nav and source["page"] else None}
         if isinstance(d, dict):
             break
         log.info("page reply unparseable: %s", clip(raw))
@@ -62,8 +65,8 @@ async def read_page(ctx, sub, text: str, source: dict, nav: bool) -> tuple[list[
         quote = item.get("quote") if isinstance(item.get("quote"), str) else ""
         value = item.get("value")
         if f is None or value in (None, "") or not norm(quote) or norm(quote) not in page:
-            log.info("dropped value %s (field %r, quote %s)", clip(value, 40), item.get("field"),
-                     "not on the page" if quote else "missing")
+            log.info("dropped value %s (field %r): quote %s", clip(value, 40), item.get("field"),
+                     f"not on the page: {clip(quote, 160)!r}" if quote else "missing")
             continue
         if f["id"] in filled:
             continue
@@ -79,6 +82,15 @@ async def read_page(ctx, sub, text: str, source: dict, nav: bool) -> tuple[list[
     if nav and not (isinstance(nxt, int) and not isinstance(nxt, bool)) and nxt not in ("contents", "leave"):
         nxt = int(nxt) if isinstance(nxt, str) and nxt.isdigit() else "leave"
     return filled, nxt
+
+
+def _bare_list(raw: str) -> list | None:
+    """Qwen often answers 'nothing here' with a bare [] (parse_json only finds objects)."""
+    try:
+        d = json.loads((raw or "").replace("```json", "").replace("```", "").strip())
+    except ValueError:
+        return None
+    return d if isinstance(d, list) else None
 
 
 def _match(ref, want: list[dict]) -> dict | None:

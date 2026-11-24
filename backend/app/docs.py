@@ -8,7 +8,7 @@ from app.db import insert
 from app.fields import read_page
 from app.local_llm import WORK, parse_json, qwen
 from app.logs import clip
-from app.search import ddg, doc_score, mentions, name_words
+from app.search import ddg, doc_score, key_word, mentions, name_words
 
 log = logging.getLogger(__name__)
 
@@ -68,24 +68,26 @@ async def _verify(ctx, url: str, expect: dict, about_entity: bool) -> dict | Non
 async def verify(ctx, url: str, expect: dict, about_entity: bool = False) -> dict | None:
     """Qwen checks page 1 of a PDF against what we expect. One check per URL per research (concurrent
     callers share it). Pages read here don't count against the page budget."""
-    if url not in ctx.inflight:
-        ctx.inflight[url] = asyncio.ensure_future(_verify(ctx, url, expect, about_entity))
-    return await ctx.inflight[url]
+    key = f"{url}|{expect['issuer'].lower()}"  # a "no" for one company must not block the PDF for another
+    if key not in ctx.inflight:
+        ctx.inflight[key] = asyncio.ensure_future(_verify(ctx, url, expect, about_entity))
+    return await ctx.inflight[key]
 
 
 async def find_document(ctx, doc: dict) -> None:
     """Search for a planned document, screen candidates for free, verify up to 3, keep the first match."""
     words = name_words(doc["issuer"] or doc["name"])
+    brand = {w} if (w := key_word(doc["issuer"] or doc["name"])) else words
     pdfs = []
     for q in (doc["search"], f"{doc['issuer']} {doc['type']} {doc['period']} pdf"):
         pdfs = [h for h in await asyncio.to_thread(ddg, q) if _is_pdf(h.url)]
         if pdfs:
             break
     domains = json.loads(doc.get("domains") or "[]")
-    keep = [h for h in pdfs if mentions(h, words)]
+    keep = [h for h in pdfs if mentions(h, brand)]
     for h in pdfs:
         if h not in keep:
-            log.info("document %s: screened out %s (no %s in URL/title/snippet)", doc["key"], h.url, sorted(words))
+            log.info("document %s: screened out %s (no %s in URL/title/snippet)", doc["key"], h.url, sorted(brand))
     keep.sort(key=lambda h: -doc_score(h, words, doc["period"], domains))
     expect = {"issuer": doc["issuer"] or doc["name"], "type": doc["type"] or "document", "period": doc["period"]}
     for h in keep[:MAX_CANDIDATES]:
@@ -128,8 +130,9 @@ async def _pick(ctx, sub, doc: dict, n: int, read: set) -> int | None:
             if c.entries else "Opening lines:\n" + c.raw)
     d = await _ask(f"{doc['key']} {doc['name']} ({n} pages). Looking for: {', '.join(want)}.\n{view}\n"
                    f"Read so far: {page_ranges(read)}\nReply JSON only: "
-                   f'{{"open":1}} to read contents entry 1, {{"page":N}} for a PDF page (1-{n}), or {{"leave":true}} '
-                   "if nothing here can help")
+                   + (f'{{"open":1}} to read contents entry 1, {{"page":N}} for a PDF page (1-{n}), '
+                      if c.entries else f'{{"page":2}} to read PDF page 2 (pages 1-{n}), ')
+                   + '{"leave":true} if nothing here can help')
     if not d or d.get("leave"):
         return None
     i, p = d.get("open"), d.get("page")
@@ -140,6 +143,8 @@ async def _pick(ctx, sub, doc: dict, n: int, read: set) -> int | None:
         return page
     if isinstance(p, int) and not isinstance(p, bool):
         return min(max(p, 1), n)
+    if i is not None:  # "open" with no usable entry: start at the first unread page rather than leaving
+        return next((q for q in range(1, n + 1) if q not in read), None)
     return None
 
 
