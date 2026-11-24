@@ -11,7 +11,7 @@ from app.search import ddg, doc_score, key_word, mentions, name_words
 
 log = logging.getLogger(__name__)
 
-MAX_CANDIDATES, FIRST_PAGE_MIN, MAX_SITE_SEARCHES = 3, 300, 2
+MAX_CANDIDATES, DESCRIBE_CHARS, MAX_SITE_SEARCHES = 3, 3000, 2
 
 
 def page_ranges(pages) -> str:
@@ -45,9 +45,10 @@ async def _ask(prompt: str, on_wait=None) -> dict | None:
 async def _verify(ctx, url: str, expect: dict, about_entity: bool) -> dict | None:
     try:
         n = await ctx.store.pages(url)
-        text = await ctx.store.text(url, 1)
-        if len(text) < FIRST_PAGE_MIN and n > 1:
-            text += "\n" + await ctx.store.text(url, 2)
+        text, p = "", 1
+        while p <= min(n, 4) and len(text) < DESCRIBE_CHARS:  # past a cover letter or filing intimation
+            text += "\n" + await ctx.store.text(url, p)
+            p += 1
     except Exception as e:
         log.warning("verify %s: unreadable: %r", url, e)
         return None
@@ -55,7 +56,9 @@ async def _verify(ctx, url: str, expect: dict, about_entity: bool) -> dict | Non
     ask = (f"Is this PDF about {expect['issuer']}?" if about_entity else
            f"Wanted: a {expect['type']} about {expect['issuer']} (ideally {expect['period']}). Is this PDF about "
            f"{expect['issuer']} and of that kind? Another year is fine.")
-    d = await _ask(f"Start of a PDF ({n} pages):\n{text[:3000]}\n\n{ask} Reply JSON only: "
+    d = await _ask(f"Start of a PDF ({n} pages):\n{text[:DESCRIBE_CHARS + 1500]}\n\n{ask} The first page may be a "
+                   "cover letter or a filing intimation to a stock exchange; judge and describe the document it "
+                   "encloses. Reply JSON only: "
                    '{"match":true|false,"about":"what it is, at most 12 words","covers":"main contents, at most 12 words"}',
                    on_wait=lambda reason: ctx.post(
                        "The Mac is short of memory, so research is paused until it frees up." if reason == "memory"

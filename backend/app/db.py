@@ -25,12 +25,13 @@ create table if not exists evidence(
   passage text, published text, fetched_at text, page integer, off_target integer default 0);
 create table if not exists documents(
   id integer primary key autoincrement, task_id integer, key text, name text, issuer text, type text,
-  period text, url text, about text, covers text, pages integer, status text, domains text, search text);
+  period text, url text, about text, covers text, pages integer, status text, domains text, search text,
+  offset_ok integer default 0, contents text, notes text);
 create table if not exists fields(
   id integer primary key autoincrement, task_id integer, subtask_id integer, name text, entity text,
   period text, kind text, sources text, search text, hint text, status text, accepted integer default 0,
   value text, unit text, reported_period text, source_url text, source_key text, page integer,
-  quote text, source_kind text, note text);
+  quote text, source_kind text, note text, printed_page integer);
 create table if not exists quota(
   day text, model text, used integer default 0, primary key(day, model));
 """

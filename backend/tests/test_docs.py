@@ -130,3 +130,12 @@ def test_verify_reports_a_paused_model(monkeypatch):
     monkeypatch.setattr(events, "publish", lambda cid, e: sent.append(e))
     asyncio.run(docs.verify(c, NAVI, {"issuer": "Navi", "type": "any", "period": "FY26"}))
     assert any(e["type"] == "message" and "memory" in e["message"]["content"].lower() for e in sent)
+
+
+def test_verify_reads_past_a_cover_letter(monkeypatch):
+    letter = "To BSE Limited. Sub: Submission of Annual Report for FY2025-26. Yours faithfully, Company Secretary."
+    store = FakeStore({NAVI: [letter, "Navi Finserv Limited Annual Report 2025-26. Financial statements. " * 40]})
+    q = ScriptedQwen(("Another year is fine", {"match": True, "about": "Navi Finserv annual report FY2025-26"}))
+    c, _ = make(monkeypatch, store, q)
+    asyncio.run(docs.verify(c, NAVI, {"issuer": "Navi Finserv", "type": "annual report", "period": "FY26"}))
+    assert "Financial statements" in q.prompts[0] and "cover letter" in q.prompts[0]

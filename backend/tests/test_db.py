@@ -56,3 +56,15 @@ def test_new_tables_exist():
     assert conn.execute("select key from documents where id=?", (d,)).fetchone()[0] == "D1"
     row = conn.execute("select * from fields where id=?", (f,)).fetchone()
     assert row["accepted"] == 0 and row["reported_period"] is None
+
+
+def test_new_columns():
+    conn = connect(":memory:")
+    d = insert(conn, "documents", task_id=1, key="D1", name="AR", status="verified", offset_ok=1, contents="[]", notes="x")
+    f = insert(conn, "fields", task_id=1, subtask_id=1, name="n", status="open", printed_page=150)
+    assert conn.execute("select offset_ok from documents where id=?", (d,)).fetchone()[0] == 1
+    assert conn.execute("select printed_page from fields where id=?", (f,)).fetchone()[0] == 150
+
+
+def test_settings_specialists():
+    assert (config.MAX_DELEGATIONS, config.PDF_STEPS, config.WEB_STEPS) == (6, 12, 12)

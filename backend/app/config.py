@@ -45,7 +45,10 @@ def _positive_int(name: str, default: int) -> int:
 MAX_SUBTASKS = _positive_int("DR_MAX_SUBTASKS", 8)
 MAX_RESTARTS = _positive_int("DR_MAX_RESTARTS", 2)
 MAX_PAGES = _positive_int("DR_MAX_PAGES", 150)
-MAX_STEPS = _positive_int("DR_MAX_STEPS", 30)  # Bonsai tool calls per loop
+MAX_DELEGATIONS = _positive_int("DR_MAX_DELEGATIONS", 6)  # main agent hand-offs per loop
+PDF_STEPS = _positive_int("DR_PDF_STEPS", 12)  # tool calls per PDF-agent call
+WEB_STEPS = _positive_int("DR_WEB_STEPS", 12)  # tool calls per web-agent call
+MAX_STEPS = _positive_int("DR_MAX_STEPS", 30)  # retired with the specialist agents; kept until Task 6
 CONTEXT_TOKENS = _positive_int("DR_CONTEXT_TOKENS", 12000)  # compact the agent conversation past this
 RESEARCH_URL = os.environ.get("DR_RESEARCH_URL", "").strip() or "http://127.0.0.1:8001/v1"  # Bonsai on MTPLX
 CHAT_URL = os.environ.get("DR_CHAT_URL", "").strip() or "http://127.0.0.1:8002/v1"  # Qwen 3.5 4B on MTPLX
