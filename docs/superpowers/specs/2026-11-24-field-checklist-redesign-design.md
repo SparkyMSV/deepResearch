@@ -287,6 +287,13 @@ near-duplicate rule; Gemini → Groq fallback with user notices and pause (now u
 and report); logs with `[c t s]` tags (new lines for each Qwen action and its reply, document verdicts,
 field fills, check-in actions); delete-conversation; restart marking work interrupted.
 
+## Future work (flagged by the user, not part of this build)
+
+- **Optimise Qwen on the MacBook.** Make the local model faster and lighter on the user's Mac: e.g.
+  prompt/KV caching for repeated prefixes, batching, quantisation and context-length choices, and
+  measuring time per Qwen call. This design adds many small Qwen calls, so it matters more after it.
+- **Document/OCR retrieval redesign** (flagged earlier), beyond the Qwen-driven reading above.
+
 ## Left to the builder
 
 - Exact prompt wording (short; one decision per call).
