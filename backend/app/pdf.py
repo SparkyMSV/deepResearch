@@ -3,6 +3,7 @@
 Only `read_pdf` is public; the task engine calls it for every PDF search hit.
 """
 import asyncio
+import logging
 import os
 import threading
 import tempfile
@@ -16,6 +17,9 @@ from app import config
 from app.cloud_llm import cloud
 from app.db import Evidence
 from app.local_llm import parse_json
+from app.logs import clip
+
+log = logging.getLogger(__name__)
 
 MAX_BYTES = 50_000_000
 TRIAGE_PAGES = 8
@@ -72,15 +76,20 @@ async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn) -
     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
     tmp.close()
     try:
+        log.info("pdf %s: downloading", url)
         await asyncio.to_thread(_download, url, tmp.name)
         head, n = await asyncio.to_thread(_read_pages, tmp.name, None)
+        log.info("pdf %s: %.1f MB, %d pages; sending first %d to triage", url,
+                 os.path.getsize(tmp.name) / 1e6, n, len(head))
         triage = await cloud("pdf", [{"role": "user", "content": (
             f"Objective: {objective}\nThe PDF has {n} pages. Here are the first {len(head)}:\n\n{_tagged(head)}\n\n"
             'Using the contents, pick the pages most likely to answer the objective. '
             'Reply as JSON only: {"pages": [[start, end], ...]} (1-based, inclusive).')}], conn)
         pages = _page_list((parse_json(triage) or {}).get("pages"), n)
         if not pages:
+            log.info("pdf %s: triage picked no pages (reply: %s)", url, clip(triage))
             return []
+        log.info("pdf %s: triage picked pages %s; reading them", url, pages)
         body, _ = await asyncio.to_thread(_read_pages, tmp.name, pages)
         raw = await cloud("pdf", [{"role": "user", "content": (
             f"Objective: {objective}\n\n{_tagged(body)}\n\n"
@@ -91,5 +100,9 @@ async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn) -
     now = datetime.now(timezone.utc).date().isoformat()
     title = url.split("?")[0].rsplit("/", 1)[-1] or url
     facts = (parse_json(raw) or {}).get("facts")
+    log.info("pdf %s: %d facts extracted", url, len(facts) if isinstance(facts, list) else 0)
+    for f in facts if isinstance(facts, list) else []:
+        if isinstance(f, dict):
+            log.debug("  p%s %s", f.get("page"), clip(f.get("fact"), 200))
     return [Evidence(subtask_id, loop, url, title, f["fact"], f.get("period") or None, now, f.get("page"))
             for f in facts if isinstance(f, dict) and f.get("fact")] if isinstance(facts, list) else []

@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from . import config, events
+from . import config, events, logs
 from .chat import _bg as _chat_bg, handle_message
 from .db import connect, insert
 from .task import _post
@@ -22,9 +22,15 @@ ACTIVE = "('running','queued','checking_in','paused_quota')"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # one shared connection, used only on the event-loop thread (routes are async)
+    logs.setup()
     app.state.conn = conn = connect(config.DB_PATH)
+    log.info("db %s; search region %s, %d results; limits: %d sub-tasks, %d rounds/loop, %d restarts",
+             config.DB_PATH, config.SEARCH_REGION, config.SEARCH_MAX_RESULTS, config.MAX_SUBTASKS,
+             config.ROUNDS_PER_LOOP, config.MAX_RESTARTS)
     for t in ("tasks", "subtasks"):
-        conn.execute(f"update {t} set status='interrupted' where status in {ACTIVE}")
+        n = conn.execute(f"update {t} set status='interrupted' where status in {ACTIVE}").rowcount
+        if n:
+            log.warning("startup: marked %d unfinished %s interrupted", n, t)
     conn.commit()
     yield
     pending = [*_bg, *_chat_bg]  # message handlers and research tasks still using conn

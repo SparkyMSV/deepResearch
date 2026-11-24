@@ -4,9 +4,10 @@ import json
 import logging
 import re
 
-from app import events
+from app import events, logs
 from app.db import insert, update
 from app.local_llm import CHAT, parse_json, qwen
+from app.logs import clip
 from app.search import search
 from app.task import _post, run_task
 
@@ -69,13 +70,16 @@ async def _reply(conn, conv_id: int, system: str, extra: str = "") -> str:
     msgs = [{"role": "system", "content": system + ("\n\n" + extra if extra else "")}, *_history(conn, conv_id)]
     _status(conv_id, "writing")
     on_token = lambda t: events.publish(conv_id, {"type": "delta", "text": t})
-    return (await qwen(msgs, priority=CHAT, on_token=on_token)).strip()
+    out = (await qwen(msgs, priority=CHAT, on_token=on_token)).strip()
+    log.info("assistant: %s", clip(out, 300))
+    return out
 
 
 async def _run_and_summarize(conn, conv_id: int, task_id: int) -> None:
     try:
         report = await run_task(conn, conv_id, task_id)
         if report:  # "" means failed; the task engine already said so
+            log.info("summarizing report for chat")
             msgs = [{"role": "system", "content": SUMMARY_PROMPT}, {"role": "user", "content": report}]
             _post(conn, conv_id, task_id, (await qwen(msgs, priority=CHAT, max_tokens=500)).strip(), "text")
     except Exception:
@@ -83,6 +87,8 @@ async def _run_and_summarize(conn, conv_id: int, task_id: int) -> None:
 
 
 async def handle_message(conn, conv_id: int, text: str) -> None:
+    logs.conv.set(conv_id)
+    log.info("user: %s", clip(text, 300))
     try:
         await _handle(conn, conv_id, text)
     finally:  # always clear the busy indicator, even on errors
@@ -112,17 +118,21 @@ async def _handle(conn, conv_id: int, text: str) -> None:
         query = q.strip() if isinstance(q, str) and q.strip() else (rest.strip() if forced else text)
         if forced:
             action = mode
+    log.info("route: %s%s, query %r", action, " (forced by prefix)" if forced else "", query)
     if action == "search":
         _status(conv_id, "searching")
         results = [{"title": h.title, "url": h.url, "snippet": h.snippet} for h in await search(query, query, CHAT)]
         if not results:  # nothing to summarize: don't let Qwen invent sources
+            log.info("search found nothing usable")
             _post(conn, conv_id, None, NO_RESULTS, "text")
             return
         _post(conn, conv_id, None, json.dumps(results), "search_results")
         found = "\n".join(f"[{r['url']}] {r['title']}: {r['snippet']}" for r in results)
+        log.info("showing %d results; summarizing", len(results))
         _post(conn, conv_id, None, await _reply(conn, conv_id, SEARCH_PROMPT, found), "text")
     elif action == "task":
         tid = insert(conn, "tasks", conversation_id=conv_id, objective=query, status="queued")
+        log.info("task %s created; running in the background", tid)
         msgs = [{"role": "system", "content": PROGRESS_PROMPT}, {"role": "user", "content": query}]
         _post(conn, conv_id, tid, (await qwen(msgs, priority=CHAT, max_tokens=60)).strip() or "Planning…", "progress")
         t = asyncio.create_task(_run_and_summarize(conn, conv_id, tid))
@@ -131,4 +141,6 @@ async def _handle(conn, conv_id: int, text: str) -> None:
     else:
         context = "\n\n".join(x for x in (_report(conn, conv_id), _evidence(conn, conv_id, text)) if x)
         prompt = ANSWER_PROMPT if context else GENERAL_PROMPT
+        log.info("answering from %s", f"{len(context)} chars of saved report/evidence" if context
+                 else "general knowledge (no evidence)")
         _post(conn, conv_id, None, await _reply(conn, conv_id, prompt, context), "text")

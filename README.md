@@ -14,6 +14,7 @@ Copy `.env.example` to `.env` and fill in:
 - `GEMINI_API_KEY`, `GROQ_API_KEY`
 - Optional limits (defaults): `DR_MAX_SUBTASKS=8`, `DR_ROUNDS_PER_LOOP=20`, `DR_MAX_RESTARTS=2`, `DR_SEARCH_MAX_RESULTS=8` (DuckDuckGo results per search; every one is fetched and read, so higher = slower rounds), `DR_SEARCH_REGION=us-en` (DuckDuckGo region: `in-en` India, `uk-en`, `wt-wt` no region)
 - Optional: `DR_DB` (SQLite path, default `data/dr.sqlite`)
+- Logs: every step (search URLs, fetches, Qwen reranking, cloud calls, check-ins) goes to the terminal and `logs/dr.log` (rotating, 5 × 5 MB), each line tagged `[c<conversation> t<task> s<sub-task>]`. `DR_LOG_LEVEL=DEBUG` adds prompt and reply previews; `DR_LOG_FILE` changes the path.
 
 ### Verify model IDs (once, after adding keys)
 The IDs in `backend/app/config.py` (`ROLES`, `DAILY_LIMITS`, `PROVIDER`) are unverified. List what each endpoint serves and fix any that differ:

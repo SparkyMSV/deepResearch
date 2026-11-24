@@ -3,11 +3,16 @@ import asyncio
 import concurrent.futures
 import itertools
 import json
+import logging
 import re
+import time
 import weakref
 from typing import Callable
 
 from app import config
+from app.logs import clip
+
+log = logging.getLogger(__name__)
 
 CHAT, WORK = 0, 1
 
@@ -45,9 +50,10 @@ def set_backend(fn: Callable[..., str]) -> None:
 
 async def _worker(q: asyncio.PriorityQueue) -> None:
     while True:
-        _, _, messages, max_tokens, on_token, fut = await q.get()
+        _, _, messages, max_tokens, on_token, timing, fut = await q.get()
         if fut.done():
             continue
+        timing["start"] = time.monotonic()
         loop = asyncio.get_running_loop()
         # tokens arrive on the MLX thread; hop back to the loop before touching asyncio state
         args = (messages, max_tokens) if on_token is None else \
@@ -71,8 +77,22 @@ async def qwen(messages: list[dict], priority: int = WORK, max_tokens: int = 800
         _queues[loop] = (q, loop.create_task(_worker(q)))
     q = _queues[loop][0]
     fut = loop.create_future()
-    await q.put((priority, next(_counter), messages, max_tokens, on_token, fut))
-    return await fut
+    timing = {"queued": time.monotonic()}  # the worker stamps "start"; logged here to keep the caller's ids
+    kind = "chat" if priority == CHAT else "work"
+    log.debug("qwen %s queued (%d ahead), prompt %d chars: %s", kind, q.qsize(),
+              sum(len(m["content"]) for m in messages), clip(messages[-1]["content"], 300))
+    await q.put((priority, next(_counter), messages, max_tokens, on_token, timing, fut))
+    try:
+        out = await fut
+    except Exception as e:
+        log.warning("qwen %s failed: %r", kind, e)
+        raise
+    end = time.monotonic()
+    start = timing.get("start", end)
+    log.info("qwen %s: waited %.1fs, generated %d chars in %.1fs%s", kind, start - timing["queued"],
+             len(out), end - start, " (streamed)" if on_token else "")
+    log.debug("qwen %s reply: %s", kind, clip(out, 400))
+    return out
 
 
 def parse_json(text: str) -> dict | None:

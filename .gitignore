@@ -4,3 +4,4 @@ node_modules/
 dist/
 .superpowers/
 __pycache__/
+logs/

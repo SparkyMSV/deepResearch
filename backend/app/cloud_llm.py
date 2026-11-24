@@ -1,4 +1,5 @@
 import os
+import logging
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from zoneinfo import ZoneInfo
 import openai
 
 from . import config
+from .logs import clip
 
 _BASE = {
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "GEMINI_API_KEY"),
@@ -15,6 +17,7 @@ _BASE = {
 }
 
 
+log = logging.getLogger(__name__)
 COOLDOWN_SECONDS = 60
 _cool: dict[str, float] = {}  # model -> time.monotonic() when its 429 cooldown ends
 _clients: dict[str, Any] = {}  # provider -> client, one per process
@@ -73,17 +76,32 @@ async def cloud(role: str, messages: list[dict], conn: sqlite3.Connection) -> st
     cooling = False
     for model in config.ROLES[role]:
         used = _used(conn, day, model)
-        if used >= config.DAILY_LIMITS[model]:
+        limit = config.DAILY_LIMITS[model]
+        if used >= limit:
+            log.info("cloud %s: skip %s, daily quota used %d/%d", role, model, used, limit)
             continue
         if _cool.get(model, 0) > time.monotonic():
+            log.info("cloud %s: skip %s, cooling down %.0fs more", role, model, _cool[model] - time.monotonic())
             cooling = True
             continue
         _set_used(conn, day, model, used + 1)
+        size = sum(len(m["content"]) for m in messages)
+        log.info("cloud %s -> %s (quota %d/%d), prompt %d chars", role, model, used + 1, limit, size)
+        log.debug("cloud %s prompt: %s", role, clip(messages[-1]["content"], 400))
+        t0 = time.monotonic()
         try:
             resp = await _client(config.PROVIDER[model]).chat.completions.create(model=model, messages=messages)
         except openai.RateLimitError:  # per-minute limit: cool down briefly; daily limit is the local counter
             _cool[model] = time.monotonic() + COOLDOWN_SECONDS
             cooling = True
+            log.warning("cloud %s: %s rate-limited (429), cooling down %ds", role, model, COOLDOWN_SECONDS)
             continue
-        return resp.choices[0].message.content or ""
+        except Exception as e:
+            log.error("cloud %s: %s failed after %.1fs: %r", role, model, time.monotonic() - t0, e)
+            raise
+        out = resp.choices[0].message.content or ""
+        log.info("cloud %s <- %s: %d chars in %.1fs", role, model, len(out), time.monotonic() - t0)
+        log.debug("cloud %s reply: %s", role, clip(out, 400))
+        return out
+    log.warning("cloud %s: no model available (%s)", role, "cooling down" if cooling else "daily quota exhausted")
     raise QuotaExhausted(role, COOLDOWN_SECONDS if cooling else None)

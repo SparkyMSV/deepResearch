@@ -5,11 +5,12 @@ from dataclasses import asdict
 
 import openai
 
-from app import config, events
+from app import config, events, logs
 from app.cloud_llm import QuotaExhausted, cloud
 from app.db import Evidence, insert, update
 from app.local_llm import WORK, parse_json, qwen
 from app.pdf import read_pdf
+from app.logs import clip
 from app.search import passages, search
 
 log = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ def _row(conn, table: str, id: int) -> dict:
 
 
 def _set(conn, conv_id: int, table: str, row: dict, **cols) -> None:
+    if "status" in cols and cols["status"] != row.get("status"):
+        log.info("%s %s: %s -> %s", table[:-1], row["id"], row.get("status"), cols["status"])
     update(conn, table, row["id"], **cols)
     row.update(cols)
     kind = table[:-1]
@@ -68,7 +71,9 @@ async def _retry(conn, conv_id: int, table: str, row: dict, make):
             if prev is None:
                 prev = row["status"]
                 _set(conn, conv_id, table, row, status="paused_quota")
-            await asyncio.sleep(e.retry_after or QUOTA_RETRY_SECONDS)
+            wait = e.retry_after or QUOTA_RETRY_SECONDS
+            log.warning("no cloud model free for %s; retrying in %ss", e, wait)
+            await asyncio.sleep(wait)
     if prev is not None:
         _set(conn, conv_id, table, row, status=prev)
     return out
@@ -83,14 +88,21 @@ def _ask(system: str, user: str) -> list[dict]:
 
 
 async def run_task(conn, conv_id: int, task_id: int) -> str:
+    logs.conv.set(conv_id)
+    logs.task.set(task_id)
     t = _row(conn, "tasks", task_id)
+    log.info("task start: %r", t["objective"])
     try:
         _set(conn, conv_id, "tasks", t, status="running")
         prompt = _ask(PLAN_PROMPT.format(n=config.MAX_SUBTASKS), t["objective"])
         raw = await _retry(conn, conv_id, "tasks", t, lambda: cloud("plan", prompt, conn))
         plan = (parse_json(raw) or {}).get("subtasks")
         plan = [s for s in plan if isinstance(s, dict)] if isinstance(plan, list) else []
+        if not plan:
+            log.warning("plan reply unusable, running the objective as one sub-task: %s", clip(raw))
         plan = plan or [{"objective": t["objective"], "query": t["objective"]}]  # bad plan JSON: one sub-task
+        log.info("plan: %d sub-task(s)%s", min(len(plan), config.MAX_SUBTASKS),
+                 f" (capped from {len(plan)})" if len(plan) > config.MAX_SUBTASKS else "")
         ids = []
         for s in plan[: config.MAX_SUBTASKS]:
             doc = s.get("needs_document")
@@ -99,6 +111,8 @@ async def run_task(conn, conv_id: int, task_id: int) -> str:
                          query=str(s.get("query") or s.get("objective") or t["objective"]),
                          needs_document=doc if isinstance(doc, str) and doc.strip() else 0)
             _set(conn, conv_id, "subtasks", _row(conn, "subtasks", sid), status="queued")
+            log.info("  sub-task %s: %r | query %r | document %r", sid, s.get("objective"), s.get("query"),
+                     doc or None)
             ids.append(sid)
         jobs = [asyncio.create_task(run_subtask(conn, conv_id, i)) for i in ids]
         try:
@@ -107,8 +121,12 @@ async def run_task(conn, conv_id: int, task_id: int) -> str:
             for j in jobs:
                 j.cancel()
             raise
-        prompt = _ask(REPORT_PROMPT, _cap(_report_input(conn, t), REPORT_MAX_CHARS))
+        body = _report_input(conn, t)
+        log.info("report: writing from %d chars of evidence%s", len(body),
+                 f" (truncated to {REPORT_MAX_CHARS})" if len(body) > REPORT_MAX_CHARS else "")
+        prompt = _ask(REPORT_PROMPT, _cap(body, REPORT_MAX_CHARS))
         report = await _retry(conn, conv_id, "tasks", t, lambda: cloud("report", prompt, conn))
+        log.info("report: %d chars", len(report))
         _set(conn, conv_id, "tasks", t, status="done", report=report)
         _post(conn, conv_id, task_id, report, "report")
         return report
@@ -144,9 +162,11 @@ def _report_input(conn, t: dict) -> str:
 
 async def _round(conn, st: dict, query: str, seen: set[str]) -> int:
     hits = await search(query, st["objective"], priority=WORK)
+    added = 0
     for hit in hits:
         if hit.is_pdf:
             if hit.url in seen:
+                log.info("PDF already read in this task, skipping %s", hit.url)
                 continue
             if st["pdf_reads"] >= MAX_PDFS_PER_SUBTASK:
                 log.info("sub-task %s: PDF cap reached, skipping %s", st["id"], hit.url)
@@ -166,6 +186,8 @@ async def _round(conn, st: dict, query: str, seen: set[str]) -> int:
                    for p in await passages(hit, st["objective"])]
         for ev in evs:
             insert(conn, "evidence", **asdict(ev))
+        added += len(evs)
+    log.info("round evidence: +%d passages from %d hits", added, len(hits))
     return len(hits)
 
 
@@ -184,6 +206,10 @@ async def _checkin(conn, conv_id: int, st: dict, queries: list[str]) -> dict | N
     d = parse_json(raw or "")
     if d is None:
         log.warning("sub-task %s check-in reply unparseable: %r", st["id"], (raw or "")[:200])
+    else:
+        log.info("check-in (%d passages reviewed): decision=%s query=%r objective=%r off_target=%s",
+                 len(ev), d.get("decision"), d.get("query"), clip(d.get("objective") or "", 100),
+                 d.get("off_target_loops"))
     return d
 
 
@@ -191,10 +217,15 @@ async def _rewrite(st: dict, query: str, queries: list[str]) -> str:
     user = (f"Objective: {st['objective']}\nQueries tried:\n" + "\n".join(queries)
             + '\nWrite the next web search query to find missing facts. Reply with JSON only: {"query":"..."}')
     new = (parse_json(await qwen([{"role": "user", "content": user}], priority=WORK)) or {}).get("query")
-    return new.strip() if isinstance(new, str) and new.strip() else query
+    if isinstance(new, str) and new.strip():
+        log.info("query rewrite: %r -> %r", query, new.strip())
+        return new.strip()
+    log.warning("query rewrite unusable, keeping %r", query)
+    return query
 
 
 async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
+    logs.sub.set(subtask_id)
     st = _row(conn, "subtasks", subtask_id)
     st["conv_id"] = conv_id  # rides along for _round's quota retries; never written to the DB
     st["pdf_reads"] = 0  # likewise: PDFs read by this sub-task, capped at MAX_PDFS_PER_SUBTASK
@@ -204,6 +235,7 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
     _set(conn, conv_id, "subtasks", st, status="running")
     while True:
         n = st["round"] + 1
+        log.info("round L%d·%d: query %r", st["loop"], n, query)
         hits = await _round(conn, st, query, seen)
         insert(conn, "rounds", subtask_id=subtask_id, loop=st["loop"], n=n, query=query, hits=hits)
         queries.append(query)
@@ -228,10 +260,16 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
                     conn.executemany("update evidence set off_target=1 where subtask_id=? and loop=?",
                                      [(subtask_id, x) for x in loops])
                     conn.commit()
+                    if loops:
+                        log.info("marked evidence from loop(s) %s off-target", loops)
                 if st["restarts"] + 1 > config.MAX_RESTARTS:
+                    log.info("restart cap %d reached, ending partial", config.MAX_RESTARTS)
                     _set(conn, conv_id, "subtasks", st, status="partial", restarts=st["restarts"] + 1)
                     break
                 new_obj = d.get("objective") if decision == "restart" else None
+                log.info("restarting loop (%s): restart %d/%d%s", "check-in asked" if decision == "restart"
+                         else f"loop hit {config.ROUNDS_PER_LOOP} rounds", st["restarts"] + 1, config.MAX_RESTARTS,
+                         f", new objective {new_obj!r}" if new_obj else "")
                 _set(conn, conv_id, "subtasks", st, status="restarted", restarts=st["restarts"] + 1,
                      loop=st["loop"] + 1, round=0, objective=str(new_obj or st["objective"]))
                 _set(conn, conv_id, "subtasks", st, status="running")
@@ -243,6 +281,7 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
         query = await _rewrite(st, query, queries)
     count = conn.execute("select count(*) from evidence where subtask_id=? and off_target=0",
                          (subtask_id,)).fetchone()[0]
+    log.info("sub-task ended %s after %d loop(s): %d usable passages", st["status"], st["loop"] + 1, count)
     line = await qwen([{"role": "user", "content":
                         f"In one short line, report that the research sub-task '{st['objective']}' ended "
                         f"as {st['status']} with {count} evidence passages."}], priority=WORK, max_tokens=60)
