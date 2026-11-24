@@ -99,3 +99,8 @@ def test_download_failure_raises(monkeypatch):
 
 def test_norm_straightens_quotes():
     assert pdf.norm("Company’s  GNPA\nwas") == "Company's GNPA was"
+
+
+def test_norm_strips_html_table_tags():
+    html = "<table><tr><td>Revenue from operations</td><td>24</td><td>2,110,127</td></tr></table>"
+    assert pdf.norm(html) == "Revenue from operations 24 2,110,127"

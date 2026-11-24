@@ -62,7 +62,8 @@ _ENTRY = re.compile(r"^(.{3,80}?)[\s.\u00b7\u2026_-]{2,}(\d{1,4})\s*$")
 
 def norm(s: str) -> str:
     """Whitespace collapsed and curly quotes straightened, for verbatim checks."""
-    s = re.sub(r"(\w)-\n(\w)", r"\1\2", s or "")  # words hyphenated across a line break
+    s = re.sub(r"<[^>]+>", " ", s or "")  # indra-ocr writes tables as HTML (<td>…</td>)
+    s = re.sub(r"(\w)-\n(\w)", r"\1\2", s)  # words hyphenated across a line break
     s = re.sub(r"(?m)^\s*[-:| ]{3,}\s*$", " ", s)  # markdown table rule lines
     return " ".join(s.translate(_QUOTES).split())
 

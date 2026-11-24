@@ -5,13 +5,14 @@ import logging
 import re
 
 from app.docs import _is_pdf, add_found_pdf
-from app.fields import all_fields, record, status_line
+from app.fields import _why_not, all_fields, record, status_line
+from app.pdf import norm
 from app.logs import clip
 from app.search import ddg, fetch, order_by_entity, url_key, window
 
 log = logging.getLogger(__name__)
 
-SHOW_RESULTS, PAGE_CHARS, CONTENTS_CHARS = 8, 6000, 2500
+SHOW_RESULTS, PAGE_CHARS, CONTENTS_CHARS, RECENT_PAGES = 8, 6000, 2500, 6
 
 
 def _fn(name: str, desc: str, props: dict, required: list[str]) -> dict:
@@ -28,7 +29,8 @@ TOOLS = [
     _fn("pdf_find", "Pages of a document that mention each term.", {"doc": _S, "terms": {"type": "array", "items": _S}},
         ["doc", "terms"]),
     _fn("pdf_page", "Read one page of a document.", {"doc": _S, "page": _I}, ["doc", "page"]),
-    _fn("record_value", "Record a field's value from the page you last read, with an exact quote from that page.",
+    _fn("record_value", "Record a field's value from a page you just read, with an exact quote from it. For a table "
+        "row, quote the row label and the value joined by ' ... '.",
         {"field": _I, "value": _S, "unit": _S, "period": _S, "quote": _S}, ["field", "value", "quote"]),
     _fn("mark_not_public", "Say a field's value is not publicly available, after searching and reading documents.",
         {"field": _I, "reason": _S}, ["field", "reason"]),
@@ -46,6 +48,12 @@ def fresh(q, queries: list[str]) -> str | None:
         return None
     k = qkey(q)
     return None if any(len(k & qkey(x)) >= 0.8 * len(k | qkey(x)) for x in queries) else q.strip()
+
+
+def _remember(sub, source: dict) -> None:
+    """Pages a value may be quoted from: the last few read (newest last)."""
+    sub["recent"] = (sub.get("recent") or [])[-(RECENT_PAGES - 1):] + [source]
+    sub["last_page"] = source
 
 
 def _int(v) -> int | None:
@@ -99,7 +107,7 @@ async def _open_result(ctx, sub, n=None):
     names = [f["name"] for f in all_fields(ctx.conn, sub["id"]) if f["status"] == "open"]
     text = window(got.text, [w for n_ in names for w in re.findall(r"[A-Za-z]{3,}", n_)], PAGE_CHARS)
     ctx.pages_used += 1
-    sub["last_page"] = {"url": h.url, "title": h.title, "key": None, "page": None, "kind": "web", "text": text}
+    _remember(sub, {"url": h.url, "title": h.title, "key": None, "page": None, "kind": "web", "text": text})
     return f"[{h.title}] {h.url}\n{text}", 1
 
 
@@ -139,15 +147,19 @@ async def _pdf_page(ctx, sub, doc=None, page=None):
     text = (await ctx.store.text(d["url"], p))[:PAGE_CHARS]
     read.add(p)
     ctx.pages_used += 1
-    sub["last_page"] = {"url": d["url"], "title": d["name"], "key": d["key"], "page": p, "kind": "doc", "text": text}
+    _remember(sub, {"url": d["url"], "title": d["name"], "key": d["key"], "page": p, "kind": "doc", "text": text})
     return f"{d['key']} page {p} of {n}:\n{text.strip() or '(no text on this page)'}", 1
 
 
 async def _record_value(ctx, sub, field=None, value=None, unit="", period="", quote=""):
-    if not sub.get("last_page"):
+    recent = sub.get("recent") or []
+    if not recent:
         return "rejected: read a page first (pdf_page or open_result); values must be quoted from it", 0
+    # the model often reads two or three pages in one turn, then records from any of them
+    src = next((p for p in reversed(recent) if _why_not(str(value or ""), str(quote or ""), norm(p["text"])) is None),
+               recent[-1])
     return record(ctx, sub, _int(field), str(value or ""), str(unit or ""), str(period or ""), str(quote or ""),
-                  sub["last_page"]), 0
+                  src), 0
 
 
 async def _mark_not_public(ctx, sub, field=None, reason=""):

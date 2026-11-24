@@ -113,3 +113,11 @@ def test_results_end_with_status_line(env):
 def test_tool_schemas_named():
     assert [t["function"]["name"] for t in tools.TOOLS] == [
         "search", "open_result", "pdf_contents", "pdf_find", "pdf_page", "record_value", "mark_not_public", "done"]
+
+
+def test_record_can_quote_any_recently_read_page(env):
+    c, sub = env
+    run(c, sub, "pdf_page", doc="D1", page=3)  # has the figures
+    run(c, sub, "pdf_page", doc="D1", page=4)  # read after, in the same turn
+    text, _ = run(c, sub, "record_value", field=1, value="2.1", unit="%", quote="Gross NPA was 2.1% and Net")
+    assert text.startswith("recorded [1] Gross NPA % = 2.1 % (D1 p.3)")
