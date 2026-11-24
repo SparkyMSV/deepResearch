@@ -28,6 +28,7 @@ indra-ocr/pypdfium2; React 18 + Vite + vitest.
 - Max 3 tool calls run per turn; tool results are plain text ending with the field status line `filled N/M: [1] ✓ [2] – [3] not public?`.
 - One research at a time across conversations (status `queued`); sub-tasks of a research run sequentially.
 - Cloud calls per research: plan, final review, report (plus fallbacks). No PDF sent to any model.
+- Search engines: `DR_SEARCH_BACKENDS` default `yahoo,bing,brave,duckduckgo,google,mojeek,startpage`; `ddg()` asks for 20 results (≈3 engines in parallel, merged/de-duplicated by ddgs), logs the engines that answered, and retries once with `auto` when none returns results; the `search` tool shows the best 8.
 - No new dependencies. Logs keep `[c t s]` tags; every tool call and result logged (clipped).
 
 ## Review Focus
@@ -87,6 +88,7 @@ indra-ocr/pypdfium2; React 18 + Vite + vitest.
 - Produces:
   - `TOOLS: list[dict]` — OpenAI tool schemas for `search(query)`, `open_result(n)`, `pdf_contents(doc)`, `pdf_find(doc, terms: list[str])`, `pdf_page(doc, page)`, `record_value(field, value, unit, period, quote)`, `mark_not_public(field, reason)`, `done(note)`.
   - `async def run_tool(ctx, sub, name: str, args: dict) -> tuple[str, int]` — returns (result text ending with `status_line`, pages read). Sub state adds `results: list[Hit]` (last search), `last_page: dict | None` (source incl. `text`), and keeps `urls`, `queries`, `read` (doc key → pages) across loops.
+  - `search.ddg(query, max_results=20)` uses `config.SEARCH_BACKENDS` (falls back to `auto` once on no results) — test `test_ddg_uses_backends_and_falls_back` in `test_search.py`.
   - Rules: `search` refuses fresh() failures ("already tried: …"); lists ≤8 results `[n] title — url — snippet`. `open_result` fetches; PDF → `add_found_pdf` → "Added as D7 (about…). Use pdf_find/pdf_page."; HTML → window ≤6,000 chars, sets `last_page`, counts 1 page. `pdf_page` refuses pages in `sub["read"][doc]`, clamps range errors to a message, counts 1 page, sets `last_page`. Page budget exhausted → every reading tool returns "Page budget used up; record what you have and call done." Unknown tool/bad args → `"error: …"`.
 
 - [ ] **Step 1: Failing tests** (fakes: `FakeStore` + new `find`, patched `ddg`/`fetch`): `test_search_lists_and_refuses_repeat`, `test_open_result_html_sets_last_page`, `test_open_result_pdf_becomes_document`, `test_pdf_page_refuses_reread_and_bad_range`, `test_pdf_find_ranked`, `test_record_uses_last_page`, `test_bad_args_return_error_text`, `test_page_budget_message`, `test_results_end_with_status_line`.
