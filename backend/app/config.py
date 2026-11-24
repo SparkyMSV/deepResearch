@@ -48,6 +48,7 @@ MAX_SUBTASKS = _positive_int("DR_MAX_SUBTASKS", 8)
 CHECKIN_EVERY = 5
 ROUNDS_PER_LOOP = _positive_int("DR_ROUNDS_PER_LOOP", 20)
 MAX_RESTARTS = _positive_int("DR_MAX_RESTARTS", 2)
+MAX_PAGES = _positive_int("DR_MAX_PAGES", 150)  # pages Qwen may read per research (PDF and web)
 
 SEARCH_MAX_RESULTS = _positive_int("DR_SEARCH_MAX_RESULTS", 8)  # every result is fetched and read
 # DuckDuckGo region code, e.g. in-en (India), us-en, uk-en, wt-wt (no region)

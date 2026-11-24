@@ -88,6 +88,8 @@ async def get_conversation(cid: int):
         t["subtasks"] = _rows(conn, "select * from subtasks where task_id=? order by id", t["id"])
         for s in t["subtasks"]:
             s["rounds"] = _rows(conn, "select * from rounds where subtask_id=? order by id", s["id"])
+        t["documents"] = _rows(conn, "select * from documents where task_id=? order by id", t["id"])
+        t["fields"] = _rows(conn, "select * from fields where task_id=? order by id", t["id"])
     return {
         **dict(conv),
         "messages": _rows(conn, "select * from messages where conversation_id=? order by id", cid),
@@ -130,6 +132,7 @@ async def delete_conversation(cid: int):
     tasks = "select id from tasks where conversation_id=?"
     subs = f"select id from subtasks where task_id in ({tasks})"
     for sql in (f"delete from evidence where subtask_id in ({subs})", f"delete from rounds where subtask_id in ({subs})",
+                f"delete from documents where task_id in ({tasks})", f"delete from fields where task_id in ({tasks})",
                 f"delete from subtasks where task_id in ({tasks})", "delete from tasks where conversation_id=?",
                 "delete from messages where conversation_id=?", "delete from conversations where id=?"):
         conn.execute(sql, (cid,))

@@ -47,3 +47,12 @@ def test_limits_from_env(monkeypatch, reload_config):
     for bad in ("abc", "0"):
         monkeypatch.setenv("DR_MAX_SUBTASKS", bad)
         assert reload_config().MAX_SUBTASKS == 8
+
+
+def test_new_tables_exist():
+    conn = connect(":memory:")
+    d = insert(conn, "documents", task_id=1, key="D1", name="AR", status="planned", domains='["navi.com"]')
+    f = insert(conn, "fields", task_id=1, subtask_id=2, name="Gross NPA %", status="open", sources='["D1"]')
+    assert conn.execute("select key from documents where id=?", (d,)).fetchone()[0] == "D1"
+    row = conn.execute("select * from fields where id=?", (f,)).fetchone()
+    assert row["accepted"] == 0 and row["reported_period"] is None

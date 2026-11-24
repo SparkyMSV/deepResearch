@@ -95,11 +95,14 @@ def test_delete_conversation_removes_everything(client, dbpath):
     db.insert(conn, "rounds", subtask_id=s, loop=0, n=1, query="q", hits=3)
     db.insert(conn, "evidence", subtask_id=s, loop=0, url="u", title="t", passage="p", published=None,
               fetched_at="d")
+    db.insert(conn, "documents", task_id=t, key="D1", name="AR", status="planned")
+    db.insert(conn, "fields", task_id=t, subtask_id=s, name="GNPA", status="open")
     assert client.delete(f"/api/conversations/{cid}").status_code == 204
     assert client.get(f"/api/conversations/{cid}").status_code == 404
     assert [c["id"] for c in client.get("/api/conversations").json()] == [keep]
     for table, col, v in (("messages", "conversation_id", cid), ("tasks", "conversation_id", cid),
-                          ("subtasks", "task_id", t), ("rounds", "subtask_id", s), ("evidence", "subtask_id", s)):
+                          ("subtasks", "task_id", t), ("rounds", "subtask_id", s), ("evidence", "subtask_id", s),
+                          ("documents", "task_id", t), ("fields", "task_id", t)):
         assert conn.execute(f"select count(*) from {table} where {col}=?", (v,)).fetchone()[0] == 0
     assert client.delete(f"/api/conversations/{cid}").status_code == 404
 
@@ -141,3 +144,14 @@ def test_event_stream_sends_ready_first():
         return await asyncio.wait_for(resp.body_iterator.__anext__(), 2)
 
     assert '"ready"' in str(asyncio.run(first()))
+
+
+def test_detail_includes_documents_and_fields(client, dbpath):
+    cid = client.post("/api/conversations").json()["id"]
+    conn = db.connect(dbpath)
+    t = db.insert(conn, "tasks", conversation_id=cid, objective="o", status="running")
+    s = db.insert(conn, "subtasks", task_id=t, objective="s", status="running")
+    db.insert(conn, "documents", task_id=t, key="D1", name="AR", status="verified")
+    db.insert(conn, "fields", task_id=t, subtask_id=s, name="Gross NPA %", status="open")
+    task = client.get(f"/api/conversations/{cid}").json()["tasks"][0]
+    assert task["documents"][0]["key"] == "D1" and task["fields"][0]["name"] == "Gross NPA %"
