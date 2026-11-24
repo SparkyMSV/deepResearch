@@ -1,0 +1,56 @@
+"""Shared fakes: an in-memory PDF store and a scripted Qwen."""
+import json
+
+from app.pdf import Contents, norm
+
+
+class FakeStore:
+    def __init__(self, docs: dict[str, list[str]], contents: dict[str, list[tuple[str, int]]] | None = None,
+                 broken: set[str] = frozenset()):
+        self.docs, self.toc, self.broken, self.reads = docs, contents or {}, set(broken), []
+
+    async def pages(self, url):
+        if url in self.broken or url not in self.docs:
+            raise OSError(f"download failed: {url}")
+        return len(self.docs[url])
+
+    async def text(self, url, n):
+        await self.pages(url)
+        self.reads.append((url, n))
+        return self.docs[url][n - 1]
+
+    async def contents(self, url):
+        entries = self.toc.get(url, [])
+        return Contents(entries, "" if len(entries) >= 5 else "\n".join(self.docs[url][0].splitlines()[:40]))
+
+    async def locate(self, url, title, printed):
+        n = len(self.docs[url])
+        for d in range(16):
+            for p in ((printed,) if d == 0 else (printed + d, printed - d)):
+                if 1 <= p <= n and norm(title).lower() in norm(self.docs[url][p - 1]).lower():
+                    return p, True
+        return min(max(printed, 1), n), False
+
+    def close(self):
+        pass
+
+
+class ScriptedQwen:
+    """First rule whose substring is in the prompt answers; a rule's reply may be a list (consumed in order),
+    a callable(prompt) or a dict/str."""
+
+    def __init__(self, *rules):
+        self.rules, self.prompts = [list(r) for r in rules], []
+
+    async def __call__(self, messages, priority=None, max_tokens=800, on_token=None):
+        prompt = messages[-1]["content"]
+        self.prompts.append(prompt)
+        for rule in self.rules:
+            if rule[0] in prompt:
+                reply = rule[1]
+                if isinstance(reply, list):
+                    reply = reply.pop(0) if len(reply) > 1 else reply[0]
+                if callable(reply):
+                    reply = reply(prompt)
+                return reply if isinstance(reply, str) else json.dumps(reply)
+        return "{}"
