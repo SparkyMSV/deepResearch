@@ -19,16 +19,53 @@ function status(s) {
   }
 }
 const tag = (s) => status(s) + (s.restarts > 0 ? ` · restart ${s.restarts}` : '')
+const closed = (f) => f.accepted || f.status === 'unavailable'
+const DOC = { not_found: '✗ not found', planned: '… searching' }
+const host = (u) => { try { return new URL(u).host } catch { return u || '' } }
+const safe = (u) => (/^https?:\/\//.test(u || '') ? u : undefined)
+const source = (f) => (f.source_key ? `${f.source_key}${f.page ? ` p.${f.page}` : ''}` : host(f.source_url))
+function fieldState(f) {
+  if (f.accepted) return '✓ accepted'
+  if (f.status === 'unavailable') return `not public: ${f.note || ''}`.trim()
+  return f.status === 'found' ? 'unreviewed' : 'searching'
+}
 
-function Row({ s }) {
+function Documents({ docs }) {
+  return (
+    <div className="t-docs">
+      <div className="muted lbl">Documents</div>
+      {docs.map((d) => (
+        <div key={d.id} className="t-doc">
+          {d.status === 'verified'
+            ? <a href={safe(d.url)} target="_blank" rel="noreferrer">✓ {d.key} {d.about || d.name}</a>
+            : <span>{d.key} {d.name} <span className="muted">{DOC[d.status] || d.status}</span></span>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function Row({ s, fields }) {
   const [open, setOpen] = useState(false)
   const rounds = s.rounds || []
+  const progress = fields.length ? `${fields.filter(closed).length}/${fields.length} fields · ` : ''
   return (
     <div className="t">
       <button className="t-head" onClick={() => setOpen(!open)} aria-expanded={open}>
         <span className="t-obj"><span className={'dot ' + (DOT[s.status] || 'q')} />{s.objective}</span>
-        <span className={'tag' + (DOT[s.status] === 'run' ? ' on' : '')}>{tag(s)}</span>
+        <span className={'tag' + (DOT[s.status] === 'run' ? ' on' : '')}>{progress + tag(s)}</span>
       </button>
+      {open && fields.length > 0 && (
+        <table className="t-fields"><tbody>
+          {fields.map((f) => (
+            <tr key={f.id}>
+              <td>{f.name}</td><td className="muted">{f.period}</td>
+              <td>{f.value ? `${f.value}${f.unit ? ` ${f.unit}` : ''}` : '—'}</td>
+              <td className="muted">{f.value ? source(f) : ''}</td><td>{fieldState(f)}</td>
+            </tr>
+          ))}
+        </tbody></table>
+      )}
       {open && (
         <ul className="t-log">
           {rounds.length === 0 && <li className="muted">No rounds yet</li>}
@@ -43,7 +80,8 @@ export default function TaskChecklist({ task }) {
   return (
     <div className="box" role="group" aria-label={`Task: ${task.objective}`}>
       {NOTE[task.status] && <div className="t-note muted">{NOTE[task.status]}</div>}
-      {task.subtasks.map((s) => <Row key={s.id} s={s} />)}
+      {task.documents?.length > 0 && <Documents docs={task.documents} />}
+      {task.subtasks.map((s) => <Row key={s.id} s={s} fields={(task.fields || []).filter((f) => f.subtask_id === s.id)} />)}
     </div>
   )
 }

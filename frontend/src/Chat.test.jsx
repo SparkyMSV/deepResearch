@@ -142,3 +142,15 @@ describe('Chat', () => {
     expect(api.sendMessage).toHaveBeenCalledWith(42, 'hello there')
   })
 })
+
+describe('applyEvent', () => {
+  it('upserts document and field into their task', async () => {
+    const { applyEvent } = await import('./Chat.jsx')
+    let st = { messages: [], tasks: [{ id: 1, subtasks: [] }], pending: {}, status: null, draft: '' }
+    st = applyEvent(st, { type: 'document', document: { id: 5, task_id: 1, key: 'D1', status: 'planned' } })
+    st = applyEvent(st, { type: 'document', document: { id: 5, task_id: 1, key: 'D1', status: 'verified' } })
+    st = applyEvent(st, { type: 'field', field: { id: 9, task_id: 1, subtask_id: 2, name: 'GNPA', status: 'open' } })
+    expect(st.tasks[0].documents).toEqual([{ id: 5, task_id: 1, key: 'D1', status: 'verified' }])
+    expect(st.tasks[0].fields[0].name).toBe('GNPA')
+  })
+})

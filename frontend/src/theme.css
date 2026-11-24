@@ -63,6 +63,10 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tag.on { color: var(--accent); }
 .t-note { padding: 6px 0; font-size: 12px; }
 .t-log { list-style: none; padding: 0 0 6px 14px; font-size: 12px; }
+.t-docs { padding: 4px 0 8px; font-size: 12px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.t-doc { padding: 2px 0; } .t-doc a { color: inherit; }
+.t-fields { width: 100%; border-collapse: collapse; font-size: 12px; margin: 2px 0 6px 14px; }
+.t-fields td { padding: 2px 8px 2px 0; vertical-align: top; }
 .report { border-radius: 8px; padding: 12px; margin-bottom: 12px; background: var(--surface); border: 1px solid var(--line); }
 .report-title { font-weight: 650; margin-bottom: 6px; }
 .report-actions { display: flex; gap: 8px; margin-top: 10px; }

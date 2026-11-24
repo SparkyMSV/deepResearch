@@ -14,7 +14,7 @@ const mergeSub = (a, b) => ({ ...a, ...b, rounds: addRounds(a.rounds, b.rounds) 
 const mergeTask = (a, b) => ({ ...a, ...b, subtasks: (b.subtasks || []).reduce((l, s) => upsert(l, s, mergeSub), a.subtasks || []) })
 const upsertTask = (tasks, t) => upsert(tasks, { subtasks: [], ...t }, mergeTask)
 
-function applyEvent(st, ev) {
+export function applyEvent(st, ev) {
   if (ev.type === 'message') {
     // the final assistant message replaces the streamed draft
     const draft = ev.message.role === 'assistant' ? '' : st.draft
@@ -26,6 +26,12 @@ function applyEvent(st, ev) {
   if (ev.type === 'subtask') {
     const sub = { rounds: st.pending[ev.subtask.id] || [], ...ev.subtask }
     return { ...st, tasks: upsertTask(st.tasks, { id: ev.subtask.task_id, subtasks: [sub] }) }
+  }
+  if (ev.type === 'document' || ev.type === 'field') {
+    const key = ev.type === 'document' ? 'documents' : 'fields'
+    const item = ev[ev.type]
+    const t = st.tasks.find((x) => x.id === item.task_id)
+    return { ...st, tasks: upsertTask(st.tasks, { id: item.task_id, [key]: upsert((t && t[key]) || [], item) }) }
   }
   if (ev.type === 'round') {
     const r = ev.round
