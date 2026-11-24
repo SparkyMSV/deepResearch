@@ -22,7 +22,7 @@ def _norm(s: str) -> str:
 
 def ddg(query: str) -> list[Hit]:
     try:
-        rows = DDGS().text(query, max_results=config.SEARCH_MAX_RESULTS)
+        rows = DDGS().text(query, max_results=config.SEARCH_MAX_RESULTS, region=config.SEARCH_REGION)
         return [Hit(r.get("title", ""), r["href"], r.get("body", "")) for r in rows]
     except Exception:
         return []

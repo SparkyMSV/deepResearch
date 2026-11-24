@@ -50,6 +50,8 @@ ROUNDS_PER_LOOP = _positive_int("DR_ROUNDS_PER_LOOP", 20)
 MAX_RESTARTS = _positive_int("DR_MAX_RESTARTS", 2)
 
 SEARCH_MAX_RESULTS = _positive_int("DR_SEARCH_MAX_RESULTS", 8)  # every result is fetched and read
+# DuckDuckGo region code, e.g. in-en (India), us-en, uk-en, wt-wt (no region)
+SEARCH_REGION = os.environ.get("DR_SEARCH_REGION", "").strip() or "us-en"
 FETCH_TIMEOUT = 15
 FETCH_MAX_BYTES = 2_000_000
 

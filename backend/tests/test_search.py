@@ -31,7 +31,7 @@ def test_ddg_error_returns_empty(monkeypatch):
 
 def test_ddg_maps_fields(monkeypatch):
     class D:
-        def text(self, q, max_results):
+        def text(self, q, max_results, region):
             return [{"title": "T", "href": "http://a", "body": "B"}]
 
     monkeypatch.setattr(search, "DDGS", D)
@@ -132,3 +132,17 @@ def test_search_fetches_every_result(monkeypatch):
     monkeypatch.setattr(search, "qwen", keep_all)
     out = asyncio.run(search.search("q", "obj"))
     assert len(fetched) == 12 and len(out) == 12
+
+
+def test_ddg_uses_configured_region(monkeypatch):
+    got = {}
+
+    class D:
+        def text(self, q, **k):
+            got.update(k)
+            return []
+
+    monkeypatch.setattr(search, "DDGS", D)
+    monkeypatch.setattr(search.config, "SEARCH_REGION", "in-en")
+    search.ddg("q")
+    assert got["region"] == "in-en"
