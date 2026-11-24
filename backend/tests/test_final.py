@@ -77,3 +77,25 @@ def test_final_review_failure_keeps_levels(ctx):
     asyncio.run(final.final_review(ctx, junk))
     asyncio.run(final.final_review(ctx, down))
     assert levels(ctx) == before
+
+
+def test_plural_units_and_bracketed_losses():
+    rows = [f(1, "Total Assets", "1,200", "crores"), f(2, "Total Liabilities", "12,000", "millions"),
+            f(3, "Equity", "(0)", "crore")]
+    assert final.identity_notes(rows) == {}
+    loss = [f(1, "Total Income", "100", "crore"), f(2, "Total Expenses", "130", "crore"), f(3, "Tax", "0", "crore"),
+            f(4, "Profit After Tax", "(30)", "crore")]
+    assert final.identity_notes(loss) == {}
+
+
+def test_revenue_from_operations_is_not_used_for_the_profit_identity():
+    rows = [f(1, "Revenue from operations", "90", "crore"), f(2, "Total Expenses", "130", "crore"),
+            f(3, "Tax", "0", "crore"), f(4, "Net Profit", "(30)", "crore")]
+    assert final.identity_notes(rows) == {}
+
+
+def test_final_unavailable_clears_the_value(ctx):
+    async def ask(msgs):
+        return json.dumps({"fields": [{"field": 2, "action": "unavailable", "reason": "not disclosed"}]})
+    asyncio.run(final.final_review(ctx, ask))
+    assert levels(ctx)[1] == ("B", "unavailable", None, 2)

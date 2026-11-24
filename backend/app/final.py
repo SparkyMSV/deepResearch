@@ -21,7 +21,7 @@ IDENTITIES = [
         ("total liabilities", ("total liabilities",), -1),
         ("equity", ("equity", "total equity", "net worth", "shareholders' equity", "shareholders equity"), -1)]),
     ("net profit = revenue − expenses − tax", [
-        ("revenue", ("total revenue", "total income", "revenue from operations", "revenue"), 1),
+        ("revenue", ("total revenue", "total income"), 1),  # revenue from operations excludes other income
         ("expenses", ("total expenses", "expenses"), -1),
         ("tax", ("tax expense", "total tax expense", "tax"), -1),
         ("net profit", ("net profit", "profit after tax", "pat"), -1)]),
@@ -47,7 +47,9 @@ def _amount(value: str, unit: str) -> float | None:
     if not m:
         return None
     n = float(m.group().replace(",", ""))
-    return n * next((f for u, f in _UNITS.items() if re.search(rf"\b{u}\b", text)), 1)
+    if re.search(r"\(\s*" + re.escape(m.group()), str(value)):  # (1,234) is a loss / negative figure
+        n = -n
+    return n * next((f for u, f in _UNITS.items() if re.search(rf"\b{u}s?\b", text)), 1)
 
 
 def identity_notes(fields: list[dict]) -> dict[int, str]:
@@ -123,5 +125,6 @@ async def final_review(ctx, ask) -> None:
                           source_key=None, page=None, quote=None, source_kind=None,
                           note=f"rejected in final review: {why}" if why else "rejected in final review")
         elif act == "unavailable":
-            ctx.set_field(f, status="unavailable", accepted=2, note=why or f["note"])
+            ctx.set_field(f, status="unavailable", accepted=2, note=why or f["note"], value=None, unit=None,
+                          reported_period=None, source_url=None, source_key=None, page=None, quote=None, source_kind=None)
     log.info("final review: %s", clip(items, 300))

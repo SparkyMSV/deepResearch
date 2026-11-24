@@ -126,11 +126,12 @@ async def local(role: str, messages: list[dict], tools: list[dict] | None = None
 
 
 async def qwen(messages: list[dict], priority: int = WORK, max_tokens: int = 800,
-               on_token: Callable[[str], None] | None = None) -> str:
+               on_token: Callable[[str], None] | None = None, on_wait: Callable[[str], None] | None = None) -> str:
     """Plain text from a local model: CHAT goes to the chat model (gives up after ~30 s unavailable),
     WORK to the research model."""
     role = "chat" if priority == CHAT else "research"
-    r = await local(role, messages, max_tokens=max_tokens, on_token=on_token, max_wait=30 if role == "chat" else None)
+    r = await local(role, messages, max_tokens=max_tokens, on_token=on_token, on_wait=on_wait,
+                    max_wait=30 if role == "chat" else None)
     return r.content
 
 

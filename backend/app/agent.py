@@ -9,7 +9,7 @@ from app.docs import page_ranges
 from app.fields import all_fields, status_line
 from app.ctx import new_state
 from app.db import insert
-from app.local_llm import local, parse_json
+from app.local_llm import LocalModelError, local, parse_json
 from app.logs import clip
 from app.tools import TOOLS, run_tool
 
@@ -20,7 +20,7 @@ NUDGE = "Use a tool, or call done."
 
 
 def _field_lines(conn, sub) -> list[str]:
-    lines = []
+    lines, recheck = [], sub.get("recheck") or set()
     for i, f in enumerate(all_fields(conn, sub["id"]), 1):
         head = f"[{i}] {f['name']} — {f['entity'] or 'any'}, {f['period']}"
         if f["accepted"]:
@@ -28,7 +28,10 @@ def _field_lines(conn, sub) -> list[str]:
         else:
             state = f"recorded {f['value']} {f['unit'] or ''}".rstrip() if f["status"] == "found" else (
                 "marked not public" if f["status"] == "unavailable" else "open")
-            lines.append(head + (f" — hint: {f['hint']}" if f["hint"] else "") + f" — {state}")
+            if f["id"] in recheck:
+                lines.append(f"{head} — {state} — reviewer asks to recheck: {f['hint'] or 'confirm or replace it'}")
+            else:
+                lines.append(head + (f" — hint: {f['hint']}" if f["hint"] else "") + f" — {state}")
     return lines
 
 
@@ -75,7 +78,8 @@ def _label(call: dict, result: str) -> str:
     if name == "pdf_page":
         return f"{a.get('doc')} p.{a.get('page')}"
     if name == "pdf_find":
-        return f"{a.get('doc')} find {', '.join(map(str, a.get('terms') or []))}"
+        terms = a.get("terms")
+        return f"{a.get('doc')} find {', '.join(map(str, terms if isinstance(terms, list) else [terms]))}"
     if name == "pdf_contents":
         return f"{a.get('doc')} contents"
     if name == "record_value":
@@ -98,19 +102,25 @@ def _pauser(ctx, sub):
     return paused, wait
 
 
+def _chars(msgs: list[dict]) -> int:
+    return sum(len(str(m.get("content") or "")) + len(json.dumps(m.get("tool_calls") or "")) for m in msgs)
+
+
 def _closed(conn, sub) -> bool:
-    return all(f["status"] in ("found", "unavailable") for f in all_fields(conn, sub["id"]))
+    """Every field recorded or marked not public, and none sent back by the reviewer for a recheck."""
+    recheck = sub.get("recheck") or set()
+    return all(f["status"] in ("found", "unavailable") and f["id"] not in recheck for f in all_fields(conn, sub["id"]))
 
 
 async def run_loop(ctx, sub, on_round) -> str:
     """Bonsai works the sub-task with tools until done / all fields closed / step budget / stalled."""
-    sub.setdefault("results", [])
-    sub.setdefault("last_page", None)
+    sub["results"], sub["recent"], sub["last_page"] = [], [], None  # nothing carried over from an earlier loop
+    sub.setdefault("recheck", set())
     sub["done_note"] = ""
     paused, wait = _pauser(ctx, sub)
 
     msgs = opening(ctx, sub) + [{"role": "user", "content": status_line(ctx.conn, sub["id"]) + "\nBegin."}]
-    steps = idle = tokens = sent = 0
+    steps = idle = tokens = sent = errors = 0
     last_text = ""
     while True:
         if _closed(ctx.conn, sub):
@@ -119,12 +129,21 @@ async def run_loop(ctx, sub, on_round) -> str:
             return "steps"
         # last request's size plus what was appended since (~3 chars per token), so a turn that adds three
         # pages can't push the next request past the server's context window
-        est = tokens + sum(len(str(m.get("content") or "")) for m in msgs[sent:]) // 3
+        est = (tokens + _chars(msgs[sent:]) // 3) if tokens else _chars(msgs) // 3  # no count from the server: all
         if est > config.CONTEXT_TOKENS:
             log.info("compacting the agent conversation at ~%d tokens", est)
             msgs = opening(ctx, sub) + [_notes(ctx, sub, last_text)]
         sent = len(msgs)
-        r = await local("research", msgs, tools=TOOLS, max_tokens=REPLY_TOKENS, on_wait=wait)
+        try:
+            r = await local("research", msgs, tools=TOOLS, max_tokens=REPLY_TOKENS, on_wait=wait)
+            errors = 0
+        except LocalModelError as e:  # e.g. prompt over the context window: compact once, then give up this loop
+            errors += 1
+            log.warning("research model error (%d): %s", errors, e)
+            if errors >= 2:
+                return "error"
+            msgs, tokens, sent = opening(ctx, sub) + [_notes(ctx, sub, last_text)], 0, 0
+            continue
         if paused["on"]:
             paused["on"] = False
             ctx.set_subtask(sub, status=paused["was"])
@@ -148,7 +167,11 @@ async def run_loop(ctx, sub, on_round) -> str:
             else:
                 result, pages = await run_tool(ctx, sub, c["name"], c["args"])
                 steps += 1
-                on_round(_label(c, result), pages)
+                try:
+                    label = _label(c, result)
+                except Exception:  # a label must never end the research
+                    label = c["name"]
+                on_round(label, pages)
                 finished = finished or c["name"] == "done"
             msgs.append({"role": "tool", "tool_call_id": c["id"], "content": result})
         if finished:
@@ -182,7 +205,11 @@ async def self_review(ctx, sub) -> str:
     msgs = [{"role": "system", "content": REVIEW_PROMPT},
             {"role": "user", "content": f"{date_note(ctx.today)}\nTopic: {sub['objective']}\n{_review_table(ctx, sub)}"}]
     paused, wait = _pauser(ctx, sub)
-    r = await local("research", msgs, think=True, max_tokens=4000, on_wait=wait)
+    try:
+        r = await local("research", msgs, think=True, max_tokens=4000, on_wait=wait)
+    except LocalModelError as e:
+        log.warning("self-review failed: %s", e)
+        return "ok"
     if paused["on"]:
         ctx.set_subtask(sub, status=paused["was"])
     d = parse_json(r.content)
@@ -204,8 +231,12 @@ async def self_review(ctx, sub) -> str:
             ctx.set_field(f, status="open", value=None, unit=None, reported_period=None, source_url=None,
                           source_key=None, page=None, quote=None, source_kind=None, hint=hint or f["hint"])
             reopened = True
-        elif act == "retry":
-            ctx.set_field(f, status="open", hint=hint or f["hint"])
+        elif act == "retry":  # keep a found value (and its document-over-web protection); send it back for a recheck
+            if f["status"] == "found":
+                ctx.set_field(f, hint=hint or f["hint"])
+                sub.setdefault("recheck", set()).add(f["id"])
+            else:
+                ctx.set_field(f, status="open", hint=hint or f["hint"])
             reopened = True
     log.info("self-review: %s", clip(items, 300))
     return "reopened" if reopened else "ok"

@@ -51,7 +51,7 @@ class ScriptedQwen:
     def __init__(self, *rules):
         self.rules, self.prompts = [list(r) for r in rules], []
 
-    async def __call__(self, messages, priority=None, max_tokens=800, on_token=None):
+    async def __call__(self, messages, priority=None, max_tokens=800, on_token=None, on_wait=None):
         prompt = messages[-1]["content"]
         self.prompts.append(prompt)
         for rule in self.rules:

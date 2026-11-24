@@ -29,11 +29,11 @@ def _is_pdf(url: str) -> bool:
     return "pdf" in url.lower()  # .pdf files and endpoints like GetRationalReportFilePdf?id=
 
 
-async def _ask(prompt: str) -> dict | None:
-    """One Qwen call with a JSON reply; one retry when it isn't JSON."""
+async def _ask(prompt: str, on_wait=None) -> dict | None:
+    """One local-model call with a JSON reply; one retry when it isn't JSON."""
     for attempt in range(2):
         raw = await qwen([{"role": "user", "content": prompt + ("\nReply with JSON only." if attempt else "")}],
-                         priority=WORK)
+                         priority=WORK, on_wait=on_wait)
         d = parse_json(raw)
         if isinstance(d, dict):
             log.info("qwen: %s", clip(d, 160))
@@ -56,7 +56,10 @@ async def _verify(ctx, url: str, expect: dict, about_entity: bool) -> dict | Non
            f"Wanted: a {expect['type']} about {expect['issuer']} (ideally {expect['period']}). Is this PDF about "
            f"{expect['issuer']} and of that kind? Another year is fine.")
     d = await _ask(f"Start of a PDF ({n} pages):\n{text[:3000]}\n\n{ask} Reply JSON only: "
-                   '{"match":true|false,"about":"what it is, at most 12 words","covers":"main contents, at most 12 words"}')
+                   '{"match":true|false,"about":"what it is, at most 12 words","covers":"main contents, at most 12 words"}',
+                   on_wait=lambda reason: ctx.post(
+                       "The Mac is short of memory, so research is paused until it frees up." if reason == "memory"
+                       else "The local research model (MTPLX) isn't answering; research is paused until it is running."))
     if not d or d.get("match") is not True:
         log.info("verify %s: no match", url)
         return None

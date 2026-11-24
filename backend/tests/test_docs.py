@@ -117,3 +117,16 @@ def test_find_document_keeps_searching_hosts_until_enough_candidates(monkeypatch
     monkeypatch.setattr(docs, "ddg", lambda qy: c.searched.append(qy) or next((v for k, v in by_query.items() if k in qy), []))
     asyncio.run(docs.find_document(c, plan_doc(c)))
     assert c.doc("D1")["status"] == "verified" and len(c.searched) == 3 and "site:navi.com" in c.searched[2]
+
+def test_verify_reports_a_paused_model(monkeypatch):
+    store = FakeStore({NAVI: ["Navi Finserv annual report " * 20]})
+
+    async def paused(messages, priority=None, max_tokens=800, on_token=None, on_wait=None):
+        on_wait("memory")
+        return '{"match": true, "about": "a", "covers": "b"}'
+
+    c, _ = make(monkeypatch, store, paused)
+    sent = []
+    monkeypatch.setattr(events, "publish", lambda cid, e: sent.append(e))
+    asyncio.run(docs.verify(c, NAVI, {"issuer": "Navi", "type": "any", "period": "FY26"}))
+    assert any(e["type"] == "message" and "memory" in e["message"]["content"].lower() for e in sent)

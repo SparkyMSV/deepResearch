@@ -127,7 +127,7 @@ def test_switch_to_groq_is_told_once_per_task(monkeypatch):
     assert env.notes().count("Gemini models are facing issues, so I switched to Groq (qwen/qwen3.8-27b).") == 1
 
 
-def test_local_model_error_is_not_blamed_on_api_keys(monkeypatch):
+def test_local_model_error_ends_only_the_subtask(monkeypatch):
     from app.local_llm import LocalModelError
     env = Env(monkeypatch)
 
@@ -135,5 +135,6 @@ def test_local_model_error_is_not_blamed_on_api_keys(monkeypatch):
         raise LocalModelError("local research model error 400: prompt too long")
 
     monkeypatch.setattr(agent, "local", broken)
-    assert asyncio.run(task.run_task(env.conn, env.conv, env.new_task())) == ""
-    assert any("LocalModelError" in n and ".env" not in n for n in env.notes())
+    assert asyncio.run(task.run_task(env.conn, env.conv, env.new_task())) == "# Report"
+    assert env.conn.execute("select status from subtasks").fetchone()[0] == "partial"
+    assert not any(".env" in n for n in env.notes())

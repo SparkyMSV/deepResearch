@@ -163,7 +163,7 @@ def test_review_reject_clears_and_reopens_retry_keeps_value(env, monkeypatch):
     monkeypatch.setattr(agent, "local", Script(review((1, "reject", "wrong year"), (2, "retry", "check notes"))))
     assert asyncio.run(agent.self_review(c, sub)) == "reopened"
     rows = c.conn.execute("select status, value, hint from fields order by id").fetchall()
-    assert [tuple(r) for r in rows] == [("open", None, "wrong year"), ("open", "2.1", "check notes")]
+    assert [tuple(r) for r in rows] == [("open", None, "wrong year"), ("found", "2.1", "check notes")]
 
 
 def test_unparseable_review_is_ok(env, monkeypatch):
@@ -197,3 +197,60 @@ def test_restart_cap_ends_partial(env, monkeypatch):
     s = Script(done, review((1, "retry", "look in notes")), done, review((1, "retry", "again")))
     st = run_sub(env, s, monkeypatch)
     assert st["status"] == "partial" and st["restarts"] == 1 and st["loop"] == 1
+
+
+def test_bad_terms_type_does_not_crash_the_loop(env, monkeypatch):
+    s = Script(Reply("", [call("pdf_find", doc="D1", terms=5)], 900), Reply("", [call("done", note="x")], 900))
+    assert loop(env, s, monkeypatch) == "done"
+
+
+def test_server_error_compacts_and_retries_then_ends_only_this_loop(env, monkeypatch):
+    from app.local_llm import LocalModelError
+
+    def boom(_):
+        raise LocalModelError("local research model error 400: maximum context length")
+
+    s = Script(Reply("", [call("pdf_page", doc="D1", page=3)], 900), boom, Reply("", [call("done", note="x")], 900))
+    assert loop(env, s, monkeypatch) == "done"
+    assert len(s.sent[2]["messages"]) == 2  # retried after compacting
+    assert loop(env, Script(boom, boom), monkeypatch) == "error"
+
+
+def test_self_review_server_error_is_ok(env, monkeypatch):
+    from app.local_llm import LocalModelError
+    c, sub, _, _ = env
+
+    async def boom(*a, **k):
+        raise LocalModelError("500")
+
+    monkeypatch.setattr(agent, "local", boom)
+    assert asyncio.run(agent.self_review(c, sub)) == "ok"
+
+
+def test_missing_token_count_estimates_whole_conversation(env, monkeypatch):
+    monkeypatch.setattr(config, "CONTEXT_TOKENS", 1500)
+    c, _, _, _ = env
+    c.store.docs[AR] = ["x" * 3000] * 12
+    s = Script(*[Reply("", [call("pdf_page", i, doc="D1", page=i)], 0) for i in (4, 5)], Reply("", [call("done", note="x")], 0))
+    loop(env, s, monkeypatch)
+    assert len(s.sent[2]["messages"]) == 2  # compacted although the server reported 0 prompt tokens
+
+
+def test_retry_keeps_the_value_but_sends_the_field_back(env, monkeypatch):
+    c, sub, _, _ = env
+    c.conn.execute("update fields set status='found', value='2.1', quote='q', source_kind='doc', source_key='D1', page=3 "
+                   "where name='Gross NPA %'")
+    c.conn.execute("update fields set status='found', value='0.9', quote='q', source_kind='doc' where name='Net NPA %'")
+    monkeypatch.setattr(agent, "local", Script(review((1, "retry", "check the consolidated figure"), (2, "accept", ""))))
+    assert asyncio.run(agent.self_review(c, sub)) == "reopened"
+    r = c.conn.execute("select status, value, hint from fields where name='Gross NPA %'").fetchone()
+    assert tuple(r) == ("found", "2.1", "check the consolidated figure")
+    assert not agent._closed(c.conn, sub)  # still being rechecked
+    assert "reviewer asks to recheck" in agent.opening(c, sub)[0]["content"]
+
+
+def test_new_loop_forgets_cached_pages_and_results(env, monkeypatch):
+    c, sub, _, _ = env
+    sub["recent"], sub["results"], sub["last_page"] = [{"text": "x"}], ["hit"], {"text": "x"}
+    loop(env, Script(Reply("", [call("done", note="x")], 10)), monkeypatch)
+    assert sub["recent"] == [] and sub["results"] == [] and sub["last_page"] is None

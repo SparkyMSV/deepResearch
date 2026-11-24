@@ -158,8 +158,11 @@ async def _record_value(ctx, sub, field=None, value=None, unit="", period="", qu
     # the model often reads two or three pages in one turn, then records from any of them
     src = next((p for p in reversed(recent) if _why_not(str(value or ""), str(quote or ""), norm(p["text"])) is None),
                recent[-1])
-    return record(ctx, sub, _int(field), str(value or ""), str(unit or ""), str(period or ""), str(quote or ""),
-                  src), 0
+    out = record(ctx, sub, _int(field), str(value or ""), str(unit or ""), str(period or ""), str(quote or ""), src)
+    if out.startswith("recorded"):  # a fresh value answers the reviewer's recheck
+        rows, i = all_fields(ctx.conn, sub["id"]), _int(field)
+        (sub.get("recheck") or set()).discard(rows[i - 1]["id"])
+    return out, 0
 
 
 async def _mark_not_public(ctx, sub, field=None, reason=""):
