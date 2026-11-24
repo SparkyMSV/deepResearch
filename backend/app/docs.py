@@ -128,7 +128,8 @@ async def _pick(ctx, sub, doc: dict, n: int, read: set) -> int | None:
             if c.entries else "Opening lines:\n" + c.raw)
     d = await _ask(f"{doc['key']} {doc['name']} ({n} pages). Looking for: {', '.join(want)}.\n{view}\n"
                    f"Read so far: {page_ranges(read)}\nReply JSON only: "
-                   f'{{"open":N}} for a contents entry, {{"page":N}} for a PDF page (1-{n}), or {{"leave":true}}')
+                   f'{{"open":1}} to read contents entry 1, {{"page":N}} for a PDF page (1-{n}), or {{"leave":true}} '
+                   "if nothing here can help")
     if not d or d.get("leave"):
         return None
     i, p = d.get("open"), d.get("page")
@@ -161,6 +162,9 @@ async def visit(ctx, sub, key: str) -> int:
             else:
                 p = await _pick(ctx, sub, doc, n, read)
                 if p is None:
+                    if count == 0:  # chose this document, then read nothing: don't offer it again here
+                        log.info("left %s without reading; set aside for this sub-task", key)
+                        sub["done_docs"].add(key)
                     break
             if p in read or not 1 <= p <= n:  # already read: the next unread page after it
                 p = next((q for q in unread if q > p), unread[0])

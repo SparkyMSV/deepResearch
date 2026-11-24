@@ -135,3 +135,10 @@ def test_verify_asks_about_the_company_not_the_exact_period(monkeypatch):
     r = asyncio.run(docs.verify(c, NAVI, {"issuer": "Navi Finserv Limited", "type": "rating rationale",
                                           "period": "FY2025-26"}))
     assert r["about"] == "CARE rationale"
+
+
+def test_leaving_without_reading_sets_the_document_aside(monkeypatch):
+    store = FakeStore({NAVI: [f"p{i}" for i in range(1, 21)]}, {NAVI: [("A", 2), ("B", 4), ("C", 6), ("D", 8), ("E", 9)]})
+    c, sub = make(monkeypatch, store, ScriptedQwen(("Contents:", {"leave": True})))
+    verified(c, NAVI, 20)
+    assert asyncio.run(docs.visit(c, sub, "D1")) == 0 and "D1" in sub["done_docs"]
