@@ -3,264 +3,196 @@ import json
 
 import httpx
 import openai
-import requests
 
-from app import config, events, task
+from app import config, docs, events, explore, fields, plan, task
 from app.cloud_llm import QuotaExhausted
-from app.db import Evidence, Hit, connect, insert
-from app.pdf import PdfRead
+from app.ctx import TaskCtx
+from app.db import connect, insert
+from tests.fakes import FakeStore, ScriptedQwen
+
+AR = "http://navi.com/ar.pdf"
+PLAN = {"documents": [], "subtasks": [{"objective": "Asset quality", "fields": [
+    {"name": "Gross NPA %", "entity": "Navi Finserv", "period": "FY2025-26", "kind": "figure"}]}]}
 
 
 class Env:
-    """Scripted fakes for search, passages, Qwen, cloud and read_pdf."""
-
-    def __init__(self, monkeypatch, checkins=None, plan=None, hits=None):
+    def __init__(self, monkeypatch, checkins=(), qwen_rules=(), store=None, plan_json=PLAN):
         self.conn = connect(":memory:")
         self.conv = insert(self.conn, "conversations", title="c")
         self.task_id = insert(self.conn, "tasks", conversation_id=self.conv, objective="obj", status="queued")
-        self.events, self.searches, self.checkin_at, self.prompts, self.pdf_calls = [], [], [], {}, []
-        self.checkins = list(checkins or [])
-        self.plan = plan or {"subtasks": [{"objective": "s", "query": "q0", "needs_document": ""}]}
-        self.hits = hits or (lambda q: [Hit("t", f"http://x/{q}", "snip", published=None, fetched_at="2026-11-24")])
+        self.events, self.checkins, self.prompts = [], list(checkins), {}
+        self.store = store or FakeStore({})
+        self.qwen = ScriptedQwen(*qwen_rules)
         monkeypatch.setattr(task, "QUOTA_RETRY_SECONDS", 0)
-        monkeypatch.setattr(task, "_task_docs", {})
         monkeypatch.setattr(events, "publish", lambda conv_id, e: self.events.append(e))
-        monkeypatch.setattr(task, "search", self.search)
-        monkeypatch.setattr(task, "passages", self.passages)
-        monkeypatch.setattr(task, "qwen", self.qwen)
         monkeypatch.setattr(task, "cloud", self.cloud)
-        monkeypatch.setattr(task, "read_pdf", self.read_pdf)
+        monkeypatch.setattr(task, "PdfStore", lambda: self.store)
+        for m in (docs, fields):
+            monkeypatch.setattr(m, "qwen", self.qwen)
+        for m in (docs, explore):
+            monkeypatch.setattr(m, "ddg", lambda q: [])
 
-    async def search(self, query, objective, priority=None, seen=None):
-        self.searches.append(query)
-        hits = self.hits(query)
-        if seen is not None:  # like the real search: skip and remember pages already read
-            hits = [h for h in hits if task.url_key(h.url) not in seen]
-            seen.update(task.url_key(h.url) for h in hits)
-        return hits
+        async def plan_cloud(role, messages, conn):
+            return json.dumps(plan_json)
 
-    async def passages(self, hit, objective):
-        return [f"fact from {hit.url}"]
-
-    async def qwen(self, messages, priority=None, max_tokens=800):
-        return json.dumps({"query": f"q{len(self.searches)}"})  # a new query each round
-
-    async def read_pdf(self, url, objective, subtask_id, loop, conn, skip=()):
-        self.pdf_calls.append(url)
-        about = "Acme annual report FY24 (130 pages)"
-        if 9 in skip:  # the only useful page was read already
-            return PdfRead([], about, [])
-        return PdfRead([Evidence(subtask_id, loop, url, "doc.pdf", "Revenue 120", "FY24", "2026-11-24", page=9)],
-                       about, [9])
+        monkeypatch.setattr(plan, "cloud", plan_cloud)
 
     async def cloud(self, role, messages, conn):
         self.prompts.setdefault(role, []).append(messages[-1]["content"])
-        if role == "plan":
-            return json.dumps(self.plan)
         if role == "report":
             return "# Report"
-        self.checkin_at.append(len(self.searches))
-        c = self.checkins.pop(0) if self.checkins else {"decision": "continue"}
+        c = self.checkins.pop(0) if self.checkins else {}
         if isinstance(c, Exception):
             raise c
         return json.dumps(c)
 
-    def subtask(self, objective="s", query="q0", needs_document=""):
-        return insert(self.conn, "subtasks", task_id=self.task_id, objective=objective, query=query,
-                      needs_document=needs_document, status="queued")
+    def ctx(self):
+        return TaskCtx(self.conn, self.conv, self.task_id, "2026-11-24", self.store)
+
+    def subtask(self, *names):
+        sid = insert(self.conn, "subtasks", task_id=self.task_id, objective="s", status="queued")
+        for n in names or ("Gross NPA %",):
+            insert(self.conn, "fields", task_id=self.task_id, subtask_id=sid, name=n, entity="Navi Finserv",
+                   period="FY2025-26", kind="figure", status="open")
+        return sid
+
+    def doc(self, pages):
+        self.store.docs[AR] = pages
+        insert(self.conn, "documents", task_id=self.task_id, key="D1", name="Navi AR", issuer="Navi Finserv",
+               status="verified", url=AR, about="Navi AR FY26", covers="financials", pages=len(pages))
 
     def run_subtask(self, sid):
-        asyncio.run(task.run_subtask(self.conn, self.conv, sid))
+        asyncio.run(task.run_subtask(self.ctx(), sid))
         return self.conn.execute("select * from subtasks where id=?", (sid,)).fetchone()
 
     def rounds(self, sid):
         return self.conn.execute("select * from rounds where subtask_id=? order by id", (sid,)).fetchall()
 
-
-def test_plan_capped_at_8(monkeypatch):
-    plan = {"subtasks": [{"objective": f"o{i}", "query": f"q{i}", "needs_document": ""} for i in range(11)]}
-    env = Env(monkeypatch, plan=plan)
-    monkeypatch.setattr(config, "MAX_SUBTASKS", 8)
-
-    async def noop(conn, conv_id, subtask_id):
-        pass
-
-    monkeypatch.setattr(task, "run_subtask", noop)
-    asyncio.run(task.run_task(env.conn, env.conv, env.task_id))
-    assert env.conn.execute("select count(*) from subtasks").fetchone()[0] == 8
+    def notes(self):
+        return [e["message"]["content"] for e in self.events if e["type"] == "message"]
 
 
-def test_limits_respected(monkeypatch):
-    env = Env(monkeypatch)
-    monkeypatch.setattr(config, "ROUNDS_PER_LOOP", 7)
-    monkeypatch.setattr(config, "MAX_RESTARTS", 0)
+def counter():
+    n = iter(range(10_000))
+    return lambda prompt: {"do": "S", "query": f"alpha{next(n)} beta{next(n)} gamma{next(n)}"}
+
+
+def test_document_first_fills_fields_and_finishes_done(monkeypatch):
+    env = Env(monkeypatch, checkins=[{"fields": [{"name": "Gross NPA %", "action": "accept"}]}],
+              qwen_rules=[("Options:", {"do": "D1"}),
+                          ("Page 1 of D1", {"found": [{"field": 1, "value": "2.1", "unit": "%", "quote": "GNPA 2.1%"}],
+                                            "next": "leave"})])
+    env.doc(["GNPA 2.1% at March 2026"])
     sid = env.subtask()
     st = env.run_subtask(sid)
-    assert env.checkin_at == [5, 7]
-    assert st["status"] == "partial" and len(env.rounds(sid)) == 7
+    assert st["status"] == "done" and env.rounds(sid)[0]["query"] == "D1 pp. 1"
+    f = env.conn.execute("select * from fields").fetchone()
+    assert (f["value"], f["accepted"], f["source_key"], f["page"]) == ("2.1", 1, "D1", 1)
+
+
+def test_focus_rotates_after_three_stalls(monkeypatch):
+    monkeypatch.setattr(config, "CHECKIN_EVERY", 99)
+    env = Env(monkeypatch, qwen_rules=[("Options:", counter())])
+    sid = env.subtask("A", "B")
+    env.run_subtask(sid)
+    focus = [p.split("\n")[0].split(" · ")[0] for p in env.qwen.prompts if p.startswith("Field:")]
+    assert focus[:6] == ["Field: A"] * 3 + ["Field: B"] * 3
+    assert len(env.prompts["checkin"]) == 1  # both fields stalled -> one check-in, which ends it
+
+
+def test_step_limit_checkin_reopens_new_loop(monkeypatch):
+    monkeypatch.setattr(config, "ROUNDS_PER_LOOP", 2)
+    env = Env(monkeypatch, checkins=[{"fields": [{"name": "Gross NPA %", "action": "retry", "hint": "try notes"}]},
+                                     {"fields": [{"name": "Gross NPA %", "action": "unavailable", "note": "n/a"}]}],
+              qwen_rules=[("Options:", counter())])
+    sid = env.subtask()
+    st = env.run_subtask(sid)
+    assert st["status"] == "done" and st["restarts"] == 1
+    assert {r["loop"] for r in env.rounds(sid)} == {0, 1}
+    assert any("Hint: try notes" in p for p in env.qwen.prompts)
+
+
+def test_restart_cap_ends_partial(monkeypatch):
+    monkeypatch.setattr(config, "ROUNDS_PER_LOOP", 2)
+    monkeypatch.setattr(config, "MAX_RESTARTS", 0)
+    env = Env(monkeypatch, checkins=[{"fields": [{"name": "Gross NPA %", "action": "retry"}]}],
+              qwen_rules=[("Options:", counter())])
+    st = env.run_subtask(env.subtask())
+    assert st["status"] == "partial" and st["restarts"] == 0
+
+
+def test_page_budget_forces_final_checkin(monkeypatch):
+    monkeypatch.setattr(config, "MAX_PAGES", 1)
+    env = Env(monkeypatch, checkins=[{"fields": [{"name": "Gross NPA %", "action": "retry"}]}],
+              qwen_rules=[("Options:", {"do": "D1"}), ("Page 1 of D1", {"found": [], "next": "leave"})])
+    env.doc(["nothing", "here"])
+    st = env.run_subtask(env.subtask())
+    assert st["status"] == "partial" and len(env.prompts["checkin"]) == 1
+
+
+def test_checkin_failure_ends_subtask_partial(monkeypatch):
+    monkeypatch.setattr(config, "CHECKIN_EVERY", 1)
+    err = openai.APIConnectionError(request=httpx.Request("POST", "http://x"))
+    env = Env(monkeypatch, checkins=[err], qwen_rules=[("Options:", counter())])
+    assert env.run_subtask(env.subtask())["status"] == "partial"
+
+
+def test_qwen_not_public_then_confirmed(monkeypatch):
+    env = Env(monkeypatch, checkins=[{"fields": [{"name": "Gross NPA %", "action": "unavailable", "note": "private"}]}],
+              qwen_rules=[("Options:", {"do": "X", "why": "not disclosed"})])
+    sid = env.subtask()
+    assert env.run_subtask(sid)["status"] == "done"
+    assert env.rounds(sid)[0]["query"] == "Gross NPA %: not public (not disclosed)"
+
+
+def test_report_input_marks_unreviewed_and_gaps(monkeypatch):
+    env = Env(monkeypatch)
+    env.subtask("A", "B")
+    env.conn.execute("update fields set status='found', value='2.1', unit='%', source_key='D1', page=4, quote='q' "
+                     "where name='A'")
+    env.conn.execute("update fields set status='unavailable', note='not disclosed' where name='B'")
+    t = dict(env.conn.execute("select * from tasks").fetchone())
+    body = task._report_input(env.conn, t, "2026-11-24")
+    assert "A (Navi Finserv, FY2025-26): 2.1 %" in body and "unreviewed" in body and "D1 p.4" in body
+    assert "Gaps:\n- B (Navi Finserv, FY2025-26): unavailable - not disclosed" in body
+
+
+def test_run_task_plans_runs_and_reports(monkeypatch):
+    env = Env(monkeypatch, checkins=[{"fields": [{"name": "Gross NPA %", "action": "unavailable"}]}],
+              qwen_rules=[("Options:", {"do": "X", "why": "none"})])
+    assert asyncio.run(task.run_task(env.conn, env.conv, env.task_id)) == "# Report"
+    assert "Today: " in env.prompts["report"][0]
+    assert env.conn.execute("select status from tasks").fetchone()[0] == "done"
 
 
 def test_auth_error_fails_task(monkeypatch):
     env = Env(monkeypatch)
     resp = httpx.Response(401, request=httpx.Request("POST", "http://x"))
 
-    async def bad_cloud(role, messages, conn):
+    async def bad(role, messages, conn):
         raise openai.AuthenticationError("bad key", response=resp, body=None)
 
-    monkeypatch.setattr(task, "cloud", bad_cloud)
-    out = asyncio.run(task.run_task(env.conn, env.conv, env.task_id))
-    assert not out
+    monkeypatch.setattr(plan, "cloud", bad)
+    assert asyncio.run(task.run_task(env.conn, env.conv, env.task_id)) == ""
     assert env.conn.execute("select status from tasks").fetchone()[0] == "failed"
-    msgs = [e["message"] for e in env.events if e["type"] == "message"]
-    assert any(m["kind"] == "progress" and ".env" in m["content"] for m in msgs)
+    assert any(".env" in n for n in env.notes())
 
 
-def test_sufficient_stops_at_round_5(monkeypatch):
-    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}])
-    sid = env.subtask()
-    st = env.run_subtask(sid)
-    assert st["status"] == "done" and len(env.rounds(sid)) == 5
-
-
-def test_continue_forever_ends_partial(monkeypatch):
-    env = Env(monkeypatch)
-    monkeypatch.setattr(config, "ROUNDS_PER_LOOP", 20)
-    monkeypatch.setattr(config, "MAX_RESTARTS", 2)
-    sid = env.subtask()
-    st = env.run_subtask(sid)
-    rounds = env.rounds(sid)
-    assert st["status"] == "partial" and len(rounds) == 60
-    assert {r["loop"] for r in rounds} == {0, 1, 2}
-
-
-def test_restart_marks_off_target(monkeypatch):
-    restart = {"decision": "restart", "query": "fresh", "objective": "s2", "off_target_loops": [0]}
-    env = Env(monkeypatch, checkins=[restart, {"decision": "sufficient"}])
-    report = asyncio.run(task.run_task(env.conn, env.conv, env.task_id))
-    assert report == "# Report"
-    rows = env.conn.execute("select loop, off_target from evidence").fetchall()
-    assert rows and all(r["off_target"] == (r["loop"] == 0) for r in rows)
-    prompt = env.prompts["report"][0]
-    assert "fact from http://x/fresh" in prompt and "fact from http://x/q0" not in prompt
-    assert env.conn.execute("select status from tasks").fetchone()[0] == "done"
-    assert any(e["type"] == "message" and e["message"]["kind"] == "report" for e in env.events)
-
-
-def test_quota_pause_resumes(monkeypatch):
-    env = Env(monkeypatch, checkins=[QuotaExhausted("checkin"), {"decision": "sufficient"}])
-    sid = env.subtask()
-    st = env.run_subtask(sid)
-    statuses = [e["subtask"]["status"] for e in env.events if e["type"] == "subtask"]
-    assert "paused_quota" in statuses
-    assert st["status"] == "done"
-    notes = [e["message"]["content"] for e in env.events if e["type"] == "message"]
-    assert sum("research is paused" in n for n in notes) == 1
-
-
-def test_switch_to_groq_is_told_once_per_task(monkeypatch):
-    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}])
-    orig = env.cloud
-
-    async def via_groq(role, messages, conn):
-        if note := task.on_fallback.get():
-            note(["gemini-3.5-flash-lite"], "qwen/qwen3.8-27b")
-        return await orig(role, messages, conn)
-
-    monkeypatch.setattr(task, "cloud", via_groq)
-    asyncio.run(task.run_task(env.conn, env.conv, env.task_id))
-    notes = [e["message"]["content"] for e in env.events if e["type"] == "message"]
-    assert notes.count("Gemini models are facing issues, so I switched to Groq (qwen/qwen3.8-27b).") == 1
-
-
-def test_zero_hits_round_continues(monkeypatch):
-    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}], hits=lambda q: [])
-    sid = env.subtask()
-    env.run_subtask(sid)
-    rounds = env.rounds(sid)
-    assert len(rounds) == 5 and all(r["hits"] == 0 for r in rounds)
-
-
-def test_pdf_hit_routed_once(monkeypatch):
-    pdf_hit = lambda q: [Hit("doc", "http://x/doc.pdf", "", is_pdf=True)]
-    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}], hits=pdf_hit)
-    sid = env.subtask()
-    env.run_subtask(sid)
-    assert env.pdf_calls == ["http://x/doc.pdf"]
-    assert env.conn.execute("select page from evidence").fetchall()[0][0] == 9
-
-
-def test_bad_pdf_link_skipped(monkeypatch):
-    pdf_hit = lambda q: [Hit("doc", f"http://x/{q}.pdf", "", is_pdf=True)]
-    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}], hits=pdf_hit)
-
-    async def dead(*a):
-        raise requests.HTTPError("404")
-
-    monkeypatch.setattr(task, "read_pdf", dead)
-    st = env.run_subtask(env.subtask())
-    assert st["status"] == "done"
-
-
-def test_non_list_off_target_loops_ignored(monkeypatch):
-    restart = {"decision": "restart", "query": "fresh", "off_target_loops": 0}
-    env = Env(monkeypatch, checkins=[restart, {"decision": "restart", "off_target_loops": ["0", "x"]},
-                                     {"decision": "sufficient"}])
-    st = env.run_subtask(env.subtask())
-    assert st["status"] == "done"
-    rows = env.conn.execute("select loop, off_target from evidence").fetchall()
-    assert all(r["off_target"] == (r["loop"] == 0) for r in rows)
-
-
-def test_non_list_plan_falls_back(monkeypatch):
-    env = Env(monkeypatch, plan={"subtasks": 3}, checkins=[{"decision": "sufficient"}])
-    assert asyncio.run(task.run_task(env.conn, env.conv, env.task_id)) == "# Report"
-    assert env.conn.execute("select objective from subtasks").fetchall()[0][0] == "obj"
-
-
-def test_pdf_reads_capped_per_subtask(monkeypatch):
-    many = lambda q: [Hit("doc", f"http://x/{q}-{i}.pdf", "", is_pdf=True) for i in range(7)]
-    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}], hits=many)
-    env.run_subtask(env.subtask())
-    assert len(env.pdf_calls) == task.MAX_PDFS_PER_SUBTASK == 5
-
-
-def test_checkin_api_error_ends_only_that_subtask(monkeypatch):
-    plan = {"subtasks": [{"objective": "a", "query": "qa"}, {"objective": "b", "query": "qb"}]}
-    resp = httpx.Response(500, request=httpx.Request("POST", "http://x"))
-    err = openai.InternalServerError("boom", response=resp, body=None)
-    env = Env(monkeypatch, plan=plan, checkins=[err, {"decision": "sufficient"}])
-    assert asyncio.run(task.run_task(env.conn, env.conv, env.task_id)) == "# Report"
-    statuses = sorted(r[0] for r in env.conn.execute("select status from subtasks"))
-    assert statuses == ["done", "partial"]
-    assert env.conn.execute("select status from tasks").fetchone()[0] == "done"
-
-
-def test_unparseable_checkin_ends_subtask_partial(monkeypatch):
-    env = Env(monkeypatch)
-
-    async def junk(role, messages, conn):
-        return "not json"
-
-    monkeypatch.setattr(task, "cloud", junk)
-    st = env.run_subtask(env.subtask())
-    assert st["status"] == "partial" and len(env.rounds(st["id"])) == 5
-
-
-def test_checkin_and_report_inputs_capped(monkeypatch):
-    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}])
-
-    async def long(hit, objective):
-        return ["x" * 20_000]
-
-    monkeypatch.setattr(task, "passages", long)
-    asyncio.run(task.run_task(env.conn, env.conv, env.task_id))
-    c, r = env.prompts["checkin"][0], env.prompts["report"][0]
-    assert len(c) <= 12_000 + 20 and c.endswith("[truncated]")
-    assert len(r) <= 60_000 + 20 and r.endswith("[truncated]")
+def test_quota_pause_resumes_and_tells_once(monkeypatch):
+    monkeypatch.setattr(config, "CHECKIN_EVERY", 1)
+    env = Env(monkeypatch, checkins=[QuotaExhausted("checkin"),
+                                     {"fields": [{"name": "Gross NPA %", "action": "unavailable"}]}],
+              qwen_rules=[("Options:", counter())])
+    assert env.run_subtask(env.subtask())["status"] == "done"
+    assert "paused_quota" in [e["subtask"]["status"] for e in env.events if e["type"] == "subtask"]
+    assert sum("research is paused" in n for n in env.notes()) == 1
 
 
 def test_cooldown_retry_waits_retry_after(monkeypatch):
-    env = Env(monkeypatch, checkins=[QuotaExhausted("checkin", 60), {"decision": "sufficient"}])
+    monkeypatch.setattr(config, "CHECKIN_EVERY", 1)
+    env = Env(monkeypatch, checkins=[QuotaExhausted("checkin", 60),
+                                     {"fields": [{"name": "Gross NPA %", "action": "unavailable"}]}],
+              qwen_rules=[("Options:", counter())])
     monkeypatch.setattr(task, "QUOTA_RETRY_SECONDS", 900)
     slept = []
 
@@ -272,80 +204,16 @@ def test_cooldown_retry_waits_retry_after(monkeypatch):
     assert slept == [60]
 
 
-def test_repeated_rewrite_asks_again_then_escalates(monkeypatch):
-    env = Env(monkeypatch, checkins=[{"decision": "continue", "query": "from supervisor"},
-                                     {"decision": "sufficient"}])
-    asked = []
+def test_switch_to_groq_is_told_once_per_task(monkeypatch):
+    env = Env(monkeypatch, checkins=[{"fields": [{"name": "Gross NPA %", "action": "unavailable"}]}] * 2,
+              qwen_rules=[("Options:", {"do": "X", "why": "none"})])
+    orig = env.cloud
 
-    async def repeats(messages, priority=None, max_tokens=800):
-        asked.append(messages[-1]["content"])
-        return json.dumps({"query": "Q0"})  # same words as the first query "q0"
+    async def via_groq(role, messages, conn):
+        if note := task.on_fallback.get():
+            note(["gemini-3.5-flash-lite"], "qwen/qwen3.8-27b")
+        return await orig(role, messages, conn)
 
-    monkeypatch.setattr(env, "qwen", repeats)
-    monkeypatch.setattr(task, "qwen", repeats)
-    sid = env.subtask()
-    st = env.run_subtask(sid)
-    assert env.searches[:2] == ["q0", "from supervisor"]  # never searched "Q0"
-    assert len(asked) >= 3 and "already tried" in asked[2]
-    assert env.checkin_at[0] == 1  # stuck after round 1: check-in right away
-    assert st["status"] == "done"
-
-
-def test_stuck_without_new_supervisor_query_ends_partial(monkeypatch):
-    env = Env(monkeypatch, checkins=[{"decision": "continue", "query": "q0"}])
-
-    async def repeats(messages, priority=None, max_tokens=800):
-        return json.dumps({"query": "q0"})
-
-    monkeypatch.setattr(task, "qwen", repeats)
-    sid = env.subtask()
-    st = env.run_subtask(sid)
-    assert st["status"] == "partial" and env.searches == ["q0"]
-
-
-def test_rewrite_steers_to_needed_pdf_until_read(monkeypatch):
-    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}], hits=lambda q: [])
-    asked = []
-    fresh = env.qwen
-
-    async def spy(messages, priority=None, max_tokens=800):
-        asked.append(messages[-1]["content"])
-        return await fresh(messages, priority, max_tokens)
-
-    monkeypatch.setattr(task, "qwen", spy)
-    sid = env.subtask(needs_document="Acme annual report 2024")
-    env.run_subtask(sid)
-    assert env.searches[0] == "Acme annual report 2024 pdf"
-    assert 'from the PDF "Acme annual report 2024"' in asked[0]
-
-
-def test_subtask_is_offered_pdfs_found_by_others_and_qwen_decides(monkeypatch):
-    report = "http://x/annual-report.pdf"
-    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}, {"decision": "sufficient"}],
-              hits=lambda q: [Hit("ar", report, "", is_pdf=True)] if q == "find ar" else [])
-    asked = []
-
-    async def pick(messages, priority=None, max_tokens=800):
-        asked.append(messages[-1]["content"])
-        if "[0] Acme annual report FY24 (130 pages)" in asked[-1]:
-            return json.dumps({"read": 0})
-        return json.dumps({"query": f"q{len(env.searches)}"})
-
-    monkeypatch.setattr(task, "qwen", pick)
-    first = env.subtask(objective="GNPA", query="find ar")
-    env.run_subtask(first)
-    assert [r["query"] for r in env.rounds(first)][:2] == ["find ar", "read more of PDF annual-report.pdf"]
-    second = env.subtask(objective="CAR", query="car query")
-    env.run_subtask(second)
-    assert [r["query"] for r in env.rounds(second)][:3] == [
-        "car query", "read PDF annual-report.pdf", "read more of PDF annual-report.pdf"]
-    assert env.pdf_calls == [report] * 4  # each sub-task: a first read, then one deeper read
-    assert any("not read by you" in a for a in asked) and any("you read 1 page(s)" in a for a in asked)
-    assert env.conn.execute("select count(*) from evidence where subtask_id=? and page=9",
-                            (second,)).fetchone()[0] == 1
-
-
-def test_near_duplicate_query_is_rejected():
-    tried = ["Navi Finserv NCD public issue interest rate yield 2024 2025"]
-    assert task._fresh("Navi Finserv NCD public issue interest rate yield 2024 2025 latest", tried) is None
-    assert task._fresh("Navi Finserv CARE rating rationale", tried) == "Navi Finserv CARE rating rationale"
+    monkeypatch.setattr(task, "cloud", via_groq)
+    asyncio.run(task.run_task(env.conn, env.conv, env.task_id))
+    assert env.notes().count("Gemini models are facing issues, so I switched to Groq (qwen/qwen3.8-27b).") == 1
