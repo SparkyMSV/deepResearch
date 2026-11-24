@@ -12,7 +12,7 @@ from app.db import Evidence, insert, update
 from app.local_llm import WORK, parse_json, qwen
 from app.pdf import read_pdf
 from app.logs import clip
-from app.search import passages, search
+from app.search import passages, search, url_key
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ MAX_PDFS_PER_SUBTASK = 5  # each PDF read costs cloud "pdf" quota
 CHECKIN_MAX_CHARS, REPORT_MAX_CHARS = 12_000, 60_000
 _FIELDS = {"tasks": ("id", "status", "objective"),
            "subtasks": ("id", "task_id", "objective", "status", "round", "loop", "restarts")}
-_pdf_seen: dict[int, set[str]] = {}  # task_id -> PDF URLs already read in that task
+_task_docs: dict[int, list[str]] = {}  # task_id -> PDFs that gave facts; every sub-task reads them before searching
 
 PLAN_PROMPT = (
     "Split the research objective into at most {n} independent sub-tasks, each answerable by web search. "
@@ -150,7 +150,7 @@ async def run_task(conn, conv_id: int, task_id: int) -> str:
         _post(conn, conv_id, task_id, text, "progress")
         return ""
     finally:
-        _pdf_seen.pop(task_id, None)
+        _task_docs.pop(task_id, None)
 
 
 def _report_input(conn, t: dict) -> str:
@@ -180,27 +180,33 @@ def _fresh(q, queries: list[str]) -> str | None:
     return None if _qkey(q) in {_qkey(x) for x in queries} else q.strip()
 
 
-async def _round(conn, st: dict, query: str, seen: set[str], urls: set[str]) -> int:
+async def _read_doc(conn, st: dict, url: str) -> list[Evidence]:
+    """Read one PDF for this sub-task's own objective; [] if capped or unreadable."""
+    if st["pdf_reads"] >= MAX_PDFS_PER_SUBTASK:
+        log.info("sub-task %s: PDF cap reached, skipping %s", st["id"], url)
+        return []
+    st["pdf_reads"] += 1
+    try:
+        evs = await _retry(conn, st["conv_id"], "subtasks", st,
+                           lambda: read_pdf(url, st["objective"], st["id"], st["loop"], conn))
+    except openai.APIError:  # cloud failures still fail the task; QuotaExhausted is retried above
+        raise
+    except Exception as e:  # dead link, size cap, timeout, corrupt PDF: skip this hit
+        log.warning("skipping PDF %s: %r", url, e)
+        return []
+    docs = _task_docs.setdefault(st["task_id"], [])
+    if evs and url not in docs:
+        docs.append(url)
+        log.info("PDF %s gave facts; other sub-tasks will read it before searching", url)
+    return evs
+
+
+async def _round(conn, st: dict, query: str, urls: set[str]) -> int:
     hits = await search(query, st["objective"], priority=WORK, seen=urls)
     added = 0
     for hit in hits:
         if hit.is_pdf:
-            if hit.url in seen:
-                log.info("PDF already read in this task, skipping %s", hit.url)
-                continue
-            if st["pdf_reads"] >= MAX_PDFS_PER_SUBTASK:
-                log.info("sub-task %s: PDF cap reached, skipping %s", st["id"], hit.url)
-                continue
-            seen.add(hit.url)
-            st["pdf_reads"] += 1
-            try:
-                evs = await _retry(conn, st["conv_id"], "subtasks", st,
-                                   lambda: read_pdf(hit.url, st["objective"], st["id"], st["loop"], conn))
-            except openai.APIError:  # cloud failures still fail the task; QuotaExhausted is retried above
-                raise
-            except Exception as e:  # dead link, size cap, timeout, corrupt PDF: skip this hit
-                log.warning("skipping PDF %s: %r", hit.url, e)
-                evs = []
+            evs = await _read_doc(conn, st, hit.url)
         else:
             evs = [Evidence(st["id"], st["loop"], hit.url, hit.title, p, hit.published, hit.fetched_at)
                    for p in await passages(hit, st["objective"])]
@@ -259,22 +265,35 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
     st = _row(conn, "subtasks", subtask_id)
     st["conv_id"] = conv_id  # rides along for _round's quota retries; never written to the DB
     st["pdf_reads"] = 0  # likewise: PDFs read by this sub-task, capped at MAX_PDFS_PER_SUBTASK
-    seen = _pdf_seen.setdefault(st["task_id"], set())
     query = f"{st['needs_document']} pdf" if st["needs_document"] else st["query"]
     queries: list[str] = []
     urls: set[str] = set()  # pages already read by this sub-task; later rounds skip them
     stuck = False  # Qwen ran out of new queries: ask the supervisor now instead of searching
     _set(conn, conv_id, "subtasks", st, status="running")
     while True:
+        # a PDF that gave facts in this task (to any sub-task) is read before any more web searching
+        doc = next((u for u in _task_docs.get(st["task_id"], []) if url_key(u) not in urls), None) \
+            if not stuck and st["pdf_reads"] < MAX_PDFS_PER_SUBTASK else None
         if not stuck:
             n = st["round"] + 1
-            log.info("round L%d·%d: query %r", st["loop"], n, query)
-            hits = await _round(conn, st, query, seen, urls)
-            insert(conn, "rounds", subtask_id=subtask_id, loop=st["loop"], n=n, query=query, hits=hits)
-            queries.append(query)
-            _set(conn, conv_id, "subtasks", st, round=n, query=query)
+            if doc:
+                urls.add(url_key(doc))
+                label = f"read PDF {doc.split('?')[0].rsplit('/', 1)[-1] or doc}"
+                log.info("round L%d·%d: %s (found earlier in this task) instead of searching", st["loop"], n, doc)
+                evs = await _read_doc(conn, st, doc)
+                for ev in evs:
+                    insert(conn, "evidence", **asdict(ev))
+                log.info("round evidence: +%d facts from the PDF", len(evs))
+                hits = 1
+            else:
+                label = query
+                log.info("round L%d·%d: query %r", st["loop"], n, query)
+                hits = await _round(conn, st, query, urls)
+            insert(conn, "rounds", subtask_id=subtask_id, loop=st["loop"], n=n, query=label, hits=hits)
+            queries.append(label)
+            _set(conn, conv_id, "subtasks", st, round=n, query=label)
             events.publish(conv_id, {"type": "round", "round": {"subtask_id": subtask_id, "loop": st["loop"],
-                                                                 "n": n, "query": query, "hits": hits}})
+                                                                 "n": n, "query": label, "hits": hits}})
         if stuck or n % config.CHECKIN_EVERY == 0 or n >= config.ROUNDS_PER_LOOP:
             _set(conn, conv_id, "subtasks", st, status="checking_in")
             d = await _checkin(conn, conv_id, st, queries)
@@ -320,6 +339,8 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
                     log.info("using the supervisor's query %r", q)
                     query, stuck = q, False
                     continue
+        if doc:
+            continue  # the pending web query hasn't been searched yet
         new = await _rewrite(conn, st, query, queries)
         if new is None:
             stuck = True

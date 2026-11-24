@@ -22,6 +22,7 @@ class Env:
         self.plan = plan or {"subtasks": [{"objective": "s", "query": "q0", "needs_document": ""}]}
         self.hits = hits or (lambda q: [Hit("t", f"http://x/{q}", "snip", published=None, fetched_at="2026-11-24")])
         monkeypatch.setattr(task, "QUOTA_RETRY_SECONDS", 0)
+        monkeypatch.setattr(task, "_task_docs", {})
         monkeypatch.setattr(events, "publish", lambda conv_id, e: self.events.append(e))
         monkeypatch.setattr(task, "search", self.search)
         monkeypatch.setattr(task, "passages", self.passages)
@@ -31,7 +32,11 @@ class Env:
 
     async def search(self, query, objective, priority=None, seen=None):
         self.searches.append(query)
-        return self.hits(query)
+        hits = self.hits(query)
+        if seen is not None:  # like the real search: skip and remember pages already read
+            hits = [h for h in hits if task.url_key(h.url) not in seen]
+            seen.update(task.url_key(h.url) for h in hits)
+        return hits
 
     async def passages(self, hit, objective):
         return [f"fact from {hit.url}"]
@@ -290,3 +295,19 @@ def test_rewrite_steers_to_needed_pdf_until_read(monkeypatch):
     env.run_subtask(sid)
     assert env.searches[0] == "Acme annual report 2024 pdf"
     assert 'from the PDF "Acme annual report 2024"' in asked[0]
+
+
+def test_pdf_found_by_one_subtask_is_read_by_the_next_before_searching(monkeypatch):
+    report = "http://x/annual-report.pdf"
+    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}, {"decision": "sufficient"}],
+              hits=lambda q: [Hit("ar", report, "", is_pdf=True)] if q == "find ar" else [])
+    first = env.subtask(objective="GNPA", query="find ar")
+    env.run_subtask(first)
+    searched = len(env.searches)
+    second = env.subtask(objective="CAR", query="car query")
+    env.run_subtask(second)
+    assert env.pdf_calls == [report, report]  # read again, for the second objective
+    assert env.rounds(second)[0]["query"] == "read PDF annual-report.pdf"
+    assert env.searches[searched] == "car query"  # web search only after the PDF round
+    assert env.conn.execute("select count(*) from evidence where subtask_id=? and page=9",
+                            (second,)).fetchone()[0] == 1
