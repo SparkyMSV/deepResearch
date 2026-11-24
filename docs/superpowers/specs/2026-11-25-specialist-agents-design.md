@@ -39,7 +39,13 @@ Runs once per verified document (planned or found later), as part of verificatio
    first lines) the entry's title, searching printed page −5…+25; offset = most common
    (PDF page − printed page) among matches. No contents or no matches → look for printed page numbers in
    page footers/headers of ~10 sampled pages; still nothing → offset 0, flagged "unverified".
-4. **Stored on the document row:** `pages`, `offset`, `offset_ok`, `contents` (JSON), `about`, `covers`.
+4. **Page index (for retrieval):** every page's text-layer text is split into passages of ~600 characters
+   (overlapping by ~100), each tagged with its PDF page, printed page and section (the contents entry it
+   falls under), and indexed for keyword-relevance ranking (BM25, pure Python, no new dependency). Pages
+   with no text layer are left out of the index (noted on the document as "N pages scanned, not indexed")
+   rather than OCR'd up front; `read_pages` still OCRs them on demand.
+5. **Stored on the document row:** `pages`, `offset`, `offset_ok`, `contents` (JSON), `about`, `covers`;
+   the page index is kept with the task's PDF store (in memory, rebuilt if needed).
 
 All of this is code (pypdfium2 text layer, indra-ocr when needed); no model involved except the existing
 description call.
@@ -67,18 +73,24 @@ before.
 Context: its goal from the main agent, the fields it must find (entity, period, hint), the document's
 description and its contents with **printed** page numbers. Fresh context each call.
 
+Working pattern taught in the prompt: **locate, then read.** Use `locate` (or the contents) to find anchor
+pages for a field, read those whole pages with `read_pages`, record values with quotes from them, and only
+then move on; don't page through the document blindly. `record_value` only accepts quotes from pages read
+in full (not from `locate` snippets).
+
 Tools (the model sees only what they do; offset, extraction and OCR are hidden):
 
 | Tool | Does |
 |---|---|
-| `find(terms)` | printed page numbers that mention each term (text layer; ranked) |
-| `read_pages(from, to)` | text of printed pages `from`–`to` (max 3 pages per call), each headed `[page N]` |
+| `locate(query)` | **anchors first**: the top 6 places in the document matching a question or terms (e.g. "total borrowings March 2026", "interest coverage"), each as printed page, section and the 1–2 line passage that matched. Retrieval only points; it never stands in for reading |
+| `read_pages(from, to)` | the **whole** text of printed pages `from`–`to` (max 2 pages per call), each headed `[page N]`, so values are read and quoted in their full context, never from a retrieved chunk alone |
 | `record_value(field, value, unit, period, quote, page)` | records from a page it read (verbatim quote rules unchanged; `page` must be one it read) |
 | `report(found, missing, notes)` | ends the call; summary for the main agent |
 
 `read_pages` maps printed → PDF pages with the stored offset, extracts those pages, runs indra-ocr (cached
 per page for the research) and returns text capped at 6,000 characters per page. Out-of-range or
-already-read pages return a short message. Budget: `DR_PDF_STEPS` (default 12) tool calls,
+already-read pages return a short message. `locate` falls back to a plain text-layer term search when the index is empty for a page range.
+Budget: `DR_PDF_STEPS` (default 12) tool calls,
 `DR_MAX_PAGES` shared across the research as today.
 
 The report returned to the main agent: values recorded (field, value, printed page), fields still missing
@@ -125,6 +137,9 @@ Stays: plan, document finding and screening, PDF store and cache, verbatim-quote
 value" for tables, HTML-safe normalisation), value precedence and review levels, self-review, consistency
 checks, final review, report, research queue, MTPLX client and memory pauses, UI (rounds now show
 delegations and specialist steps, e.g. `→ PDF D1: Total Debt`, `D1 pp. 228–229`, `search "…"`).
+
+Future option: embedding-based retrieval for `locate` (MTPLX can serve an embedding model) if keyword
+ranking proves too literal; it costs extra memory on a 24 GB Mac, so it isn't in this build.
 
 Goes: the single all-tools loop (`agent.run_loop` with the combined `tools.TOOLS`), the agent-facing
 `pdf_contents`/`pdf_find`/`pdf_page` tools (replaced by the PDF agent's tools), `mark_not_public` in the
