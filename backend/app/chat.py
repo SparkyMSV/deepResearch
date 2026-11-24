@@ -65,7 +65,8 @@ def _fields(conn, conv_id: int) -> str:
     for f in conn.execute("select * from fields where task_id=? order by id", (t["id"],)):
         src = f" [{f['source_key'] or f['source_url']}{f', p.' + str(f['page']) if f['page'] else ''}]" \
             if f["value"] else ""
-        state = "accepted" if f["accepted"] else "unreviewed" if f["status"] == "found" else f["status"]
+        state = {2: "confirmed", 1: "checked locally"}.get(f["accepted"]) or (
+            "unreviewed" if f["status"] == "found" else f["status"])
         lines.append(f"{f['name']} ({f['entity'] or 'any'}, {f['period']}): "
                      f"{(f['value'] or '') + (f['unit'] or '') if f['value'] else '—'}{src} ({state})")
     return ("Research fields:\n" + "\n".join(lines))[:4000] if lines else ""

@@ -1,9 +1,10 @@
 import { useState } from 'react'
 
-const DOT = { running: 'run', checking_in: 'run', restarted: 'run', failed: 'q', done: 'done', queued: 'q', paused_quota: 'warn', partial: 'warn', interrupted: 'warn' }
+const DOT = { running: 'run', checking_in: 'run', restarted: 'run', failed: 'q', done: 'done', queued: 'q', paused_quota: 'warn', paused_memory: 'warn', partial: 'warn', interrupted: 'warn' }
 
 const NOTE = {
   paused_quota: 'Paused — Gemini and Groq unavailable, retrying',
+  queued: 'Queued — waiting for the current research to finish',
   interrupted: 'Interrupted — server restarted. Ask again to rerun.',
   failed: 'Stopped',
 }
@@ -15,6 +16,7 @@ function status(s) {
     case 'checking_in': return 'checking in'
     case 'done': return `done · ${n} rounds`
     case 'paused_quota': return 'paused — models unavailable, retrying'
+    case 'paused_memory': return 'paused — Mac memory low or MTPLX not running, retrying'
     default: return s.status
   }
 }
@@ -26,7 +28,8 @@ const safe = (u) => (/^https?:\/\//.test(u || '') ? u : undefined)
 const source = (f) => (f.source_key ? `${f.source_key}${f.page ? ` p.${f.page}` : ''}` : host(f.source_url))
 function fieldState(f) {
   if (f.status === 'unavailable') return f.accepted ? `not public: ${f.note || ''}`.trim() : 'not public? (unreviewed)'
-  if (f.accepted) return '✓ accepted'
+  if (f.accepted === 2) return '✓ confirmed'
+  if (f.accepted) return '✓ checked locally'
   return f.status === 'found' ? 'unreviewed' : 'searching'
 }
 

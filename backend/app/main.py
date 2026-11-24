@@ -4,6 +4,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -12,11 +13,12 @@ from sse_starlette.sse import EventSourceResponse
 from . import config, events, logs
 from .chat import _bg as _chat_bg, handle_message
 from .db import connect, insert
+from .local_llm import LocalUnavailable
 from .task import _post
 
 log = logging.getLogger(__name__)
 _bg: set[asyncio.Task] = set()  # strong refs so background tasks aren't GC'd
-ACTIVE = "('running','queued','checking_in','paused_quota')"
+ACTIVE = "('running','queued','checking_in','paused_quota','paused_memory')"
 
 
 @asynccontextmanager
@@ -24,9 +26,15 @@ async def lifespan(app: FastAPI):
     # one shared connection, used only on the event-loop thread (routes are async)
     logs.setup()
     app.state.conn = conn = connect(config.DB_PATH)
-    log.info("db %s; search region %s, %d results; limits: %d sub-tasks, %d rounds/loop, %d restarts",
-             config.DB_PATH, config.SEARCH_REGION, config.SEARCH_MAX_RESULTS, config.MAX_SUBTASKS,
-             config.ROUNDS_PER_LOOP, config.MAX_RESTARTS)
+    log.info("db %s; search region %s via %s; limits: %d sub-tasks, %d steps/loop, %d restarts, %d pages; "
+             "research model %s, chat model %s", config.DB_PATH, config.SEARCH_REGION, config.SEARCH_BACKENDS,
+             config.MAX_SUBTASKS, config.MAX_STEPS, config.MAX_RESTARTS, config.MAX_PAGES, config.RESEARCH_URL,
+             config.CHAT_URL)
+    for name, url in (("research", config.RESEARCH_URL), ("chat", config.CHAT_URL)):
+        try:  # a missing server is not fatal: calls wait for it; just say so early
+            httpx.get(url.removesuffix("/v1") + "/health", timeout=2).raise_for_status()
+        except Exception:
+            log.warning("%s model server not reachable at %s; start MTPLX (see README)", name, url)
     for t in ("tasks", "subtasks"):
         n = conn.execute(f"update {t} set status='interrupted' where status in {ACTIVE}").rowcount
         if n:
@@ -100,6 +108,10 @@ async def get_conversation(cid: int):
 async def _run(conn, cid: int, text: str):
     try:
         await handle_message(conn, cid, text)
+    except LocalUnavailable:
+        log.warning("chat model unavailable")
+        _post(conn, cid, None, "The local chat model isn't answering. Start MTPLX (see the README: "
+              "`mtplx serve … --port 8002`) and try again.", "text")
     except Exception as e:
         log.exception("handle_message failed")
         _post(conn, cid, None, f"Sorry, something went wrong: {type(e).__name__}.", "text")

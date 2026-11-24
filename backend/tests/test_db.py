@@ -40,10 +40,10 @@ def reload_config(monkeypatch):
 
 def test_limits_from_env(monkeypatch, reload_config):
     monkeypatch.setenv("DR_MAX_SUBTASKS", "3")
-    monkeypatch.setenv("DR_ROUNDS_PER_LOOP", "10")
+    monkeypatch.setenv("DR_MAX_STEPS", "10")
     monkeypatch.setenv("DR_MAX_RESTARTS", "1")
     c = reload_config()
-    assert (c.MAX_SUBTASKS, c.ROUNDS_PER_LOOP, c.MAX_RESTARTS) == (3, 10, 1)
+    assert (c.MAX_SUBTASKS, c.MAX_STEPS, c.MAX_RESTARTS) == (3, 10, 1)
     for bad in ("abc", "0"):
         monkeypatch.setenv("DR_MAX_SUBTASKS", bad)
         assert reload_config().MAX_SUBTASKS == 8

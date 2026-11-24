@@ -174,4 +174,6 @@ def test_fields_context_lists_latest_task_fields():
            value="2.1", unit="%", source_key="D1", page=4, accepted=1)
     insert(conn, "fields", task_id=tid, subtask_id=1, name="PCR", entity="Navi", period="FY26", status="unavailable")
     out = chat._fields(conn, cid)
-    assert "Gross NPA % (Navi, FY26): 2.1% [D1, p.4] (accepted)" in out and "PCR (Navi, FY26): — (unavailable)" in out
+    assert "Gross NPA % (Navi, FY26): 2.1% [D1, p.4] (checked locally)" in out and "PCR (Navi, FY26): — (unavailable)" in out
+    conn.execute("update fields set accepted=2 where name='Gross NPA %'")
+    assert "(confirmed)" in chat._fields(conn, cid)

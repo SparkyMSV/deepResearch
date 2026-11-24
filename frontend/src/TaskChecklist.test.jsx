@@ -63,7 +63,7 @@ describe('TaskChecklist', () => {
     fireEvent.click(screen.getByText('Find prices'))
     expect(screen.getByText('2.1 %')).toBeTruthy()
     expect(screen.getByText('D1 p.112')).toBeTruthy()
-    expect(screen.getByText('✓ accepted')).toBeTruthy()
+    expect(screen.getByText('✓ checked locally')).toBeTruthy()
     expect(screen.getByText('news.com')).toBeTruthy()
     expect(screen.getByText('unreviewed')).toBeTruthy()
     expect(screen.getByText('not public: not disclosed')).toBeTruthy()
@@ -74,5 +74,18 @@ describe('TaskChecklist', () => {
     render(<TaskChecklist task={task('running', [sub({})])} />)
     expect(screen.getByText('round 0 · check-in at 5')).toBeTruthy()
     expect(screen.queryByText('Documents')).toBeNull()
+  })
+
+  it('shows review levels and the new pause/queue notes', () => {
+    const fields = [
+      { id: 1, subtask_id: 2, name: 'A', period: 'FY26', status: 'found', accepted: 2, value: '1', unit: '%', source_key: 'D1', page: 3 },
+      { id: 2, subtask_id: 2, name: 'B', period: 'FY26', status: 'found', accepted: 1, value: '2', unit: '%', source_key: 'D1', page: 4 },
+    ]
+    render(<TaskChecklist task={{ ...task('queued', [sub({ status: 'paused_memory' })]), fields }} />)
+    expect(screen.getByText('Queued — waiting for the current research to finish')).toBeTruthy()
+    expect(screen.getByText(/paused — Mac memory low or MTPLX not running/)).toBeTruthy()
+    fireEvent.click(screen.getByText('Find prices'))
+    expect(screen.getByText('✓ confirmed')).toBeTruthy()
+    expect(screen.getByText('✓ checked locally')).toBeTruthy()
   })
 })

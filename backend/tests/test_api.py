@@ -155,3 +155,34 @@ def test_detail_includes_documents_and_fields(client, dbpath):
     db.insert(conn, "fields", task_id=t, subtask_id=s, name="Gross NPA %", status="open")
     task = client.get(f"/api/conversations/{cid}").json()["tasks"][0]
     assert task["documents"][0]["key"] == "D1" and task["fields"][0]["name"] == "Gross NPA %"
+
+
+def test_startup_marks_queued_and_paused_memory_interrupted(dbpath):
+    import app.main as main
+
+    conn = db.connect(dbpath)
+    t = db.insert(conn, "tasks", conversation_id=1, objective="o", status="queued")
+    s = db.insert(conn, "subtasks", task_id=t, objective="s", status="paused_memory")
+    conn.close()
+    with TestClient(main.app):
+        pass
+    conn = db.connect(dbpath)
+    assert conn.execute("select status from tasks").fetchone()[0] == "interrupted"
+    assert conn.execute("select status from subtasks").fetchone()[0] == "interrupted"
+
+
+def test_chat_model_down_gives_a_helpful_message(client, monkeypatch):
+    import app.main as main
+    from app.local_llm import LocalUnavailable
+
+    async def down(conn, conv_id, text):
+        raise LocalUnavailable("down")
+
+    monkeypatch.setattr(main, "handle_message", down)
+    cid = client.post("/api/conversations").json()["id"]
+    client.post(f"/api/conversations/{cid}/messages", json={"text": "hi"})
+    for _ in range(50):
+        msgs = client.get(f"/api/conversations/{cid}").json()["messages"]
+        if msgs:
+            break
+    assert "MTPLX" in msgs[-1]["content"]

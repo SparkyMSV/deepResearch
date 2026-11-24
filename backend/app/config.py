@@ -9,7 +9,6 @@ log = logging.getLogger(__name__)
 # override=False so real environment variables win over .env
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
-LOCAL_MODEL = "mlx-community/Qwen3.5-4B-4bit"
 
 _PLAN = ["gemini-3.5-flash-lite", "qwen/qwen3.8-27b"]
 ROLES: dict[str, list[str]] = {
@@ -44,8 +43,6 @@ def _positive_int(name: str, default: int) -> int:
 
 
 MAX_SUBTASKS = _positive_int("DR_MAX_SUBTASKS", 8)
-CHECKIN_EVERY = 5
-ROUNDS_PER_LOOP = _positive_int("DR_ROUNDS_PER_LOOP", 20)
 MAX_RESTARTS = _positive_int("DR_MAX_RESTARTS", 2)
 MAX_PAGES = _positive_int("DR_MAX_PAGES", 150)
 MAX_STEPS = _positive_int("DR_MAX_STEPS", 30)  # Bonsai tool calls per loop
