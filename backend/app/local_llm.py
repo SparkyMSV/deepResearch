@@ -29,6 +29,10 @@ class Reply:
     prompt_tokens: int = 0
 
 
+class LocalModelError(Exception):
+    """The local model server answered with an error other than a memory refusal (e.g. prompt too long)."""
+
+
 class LocalUnavailable(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
@@ -108,7 +112,7 @@ async def local(role: str, messages: list[dict], tools: list[dict] | None = None
             reason = "down"
         except openai.APIStatusError as e:
             if e.status_code != 507:
-                raise
+                raise LocalModelError(f"local {role} model error {e.status_code}: {str(e)[:300]}") from e
             reason = "memory"
         if max_wait is not None and waited >= max_wait:
             raise LocalUnavailable(reason)

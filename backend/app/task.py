@@ -1,14 +1,14 @@
-"""Task engine: the larger model plans a field checklist; local Qwen explores documents and the web to fill
-it; the larger model reviews at check-ins and writes the report."""
+"""Research flow: the cloud plans; Bonsai (local, MTPLX) explores each sub-task with tools and checks its own
+values; consistency checks; one cloud final review; the cloud writes the report. One research at a time."""
 import asyncio
 import logging
 from datetime import date
 
 import openai
 
-from app import checkin, config, docs, events, explore, logs
+from app import agent, config, docs, events, final, logs
 from app.cloud_llm import QuotaExhausted, cloud, on_fallback
-from app.ctx import TaskCtx, new_state
+from app.ctx import TaskCtx
 from app.db import insert, update
 from app.pdf import PdfStore
 from app.plan import make_plan
@@ -16,18 +16,19 @@ from app.plan import make_plan
 log = logging.getLogger(__name__)
 
 QUOTA_RETRY_SECONDS = 900
-STALL_STEPS = 3  # steps on one field without filling anything before focus moves on
 REPORT_MAX_CHARS = 60_000
+LEVELS = {0: "unreviewed", 1: "checked locally", 2: "confirmed"}
 _FIELDS = {"tasks": ("id", "status", "objective"),
            "subtasks": ("id", "task_id", "objective", "status", "round", "loop", "restarts")}
 _paused: dict[int, int] = {}  # task_id -> how many of its calls are waiting for a cloud model
+_locks: dict = {}  # event loop -> research lock (one research at a time on the one research model)
 
 REPORT_PROMPT = (
     "Write a research report in markdown answering the objective from the fields and documents below only. "
     "Present key figures in tables. Every figure or claim must cite its source (document key and name with page, "
-    "or URL) and its period. Use only values present below; never invent or extrapolate numbers. When sources "
-    "disagree, documents outrank web pages. Mark values that are 'unreviewed' as such. End with a 'Gaps' "
-    "section listing open and unavailable fields with their reasons."
+    "or URL) and its period, and show its review level (confirmed, checked locally, unreviewed). Use only values "
+    "present below; never invent or extrapolate numbers. When sources disagree, documents outrank web pages. "
+    "Repeat any 'doesn't add up' notes. End with a 'Gaps' section listing open and unavailable fields with reasons."
 )
 
 
@@ -84,15 +85,28 @@ def _ask(system: str, user: str) -> list[dict]:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _closed(f: dict) -> bool:
-    """Closed means a check-in accepted the value or confirmed it is not public."""
-    return bool(f["accepted"])
+def _research_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if loop not in _locks:
+        _locks[loop] = asyncio.Lock()
+    return _locks[loop]
 
 
 async def run_task(conn, conv_id: int, task_id: int) -> str:
     logs.conv.set(conv_id)
     logs.task.set(task_id)
     t = _row(conn, "tasks", task_id)
+    lock = _research_lock()
+    if lock.locked():
+        _set(conn, conv_id, "tasks", t, status="queued")
+        _post(conn, conv_id, task_id, "Another research is running on the local model; this one starts when it "
+              "finishes.", "progress")
+    async with lock:
+        return await _run(conn, conv_id, t)
+
+
+async def _run(conn, conv_id: int, t: dict) -> str:
+    task_id = t["id"]
     log.info("task start: %r", t["objective"])
     told: set[tuple[str, str]] = set()
 
@@ -118,13 +132,17 @@ async def run_task(conn, conv_id: int, task_id: int) -> str:
             ctx.set_doc(d, status="planned")
         for d in planned:
             await docs.find_document(ctx, d)
-        jobs = [asyncio.create_task(run_subtask(ctx, i)) for i in ids]
-        try:
-            await asyncio.gather(*jobs)
-        except BaseException:
-            for j in jobs:
-                j.cancel()
-            raise
+        for sid in ids:  # one at a time: the research model's cache stays warm and memory stays bounded
+            await agent.run_subtask(ctx, sid)
+        rows = [dict(r) for r in conn.execute("select * from fields where task_id=?", (task_id,))]
+        for fid, note in final.identity_notes(rows).items():
+            f = next(r for r in rows if r["id"] == fid)
+            ctx.set_field(f, note=f"{f['note']}; {note}" if f["note"] else note)
+
+        async def ask(msgs):
+            return await _retry(conn, conv_id, "tasks", t, lambda: cloud("checkin", msgs, conn))
+
+        await final.final_review(ctx, ask)
         body = _report_input(conn, t, ctx.today)
         log.info("report: writing from %d chars%s", len(body),
                  f" (truncated to {REPORT_MAX_CHARS})" if len(body) > REPORT_MAX_CHARS else "")
@@ -143,6 +161,7 @@ async def run_task(conn, conv_id: int, task_id: int) -> str:
         name = type(e).__name__
         text = (f"Research stopped: Gemini/Groq call failed ({name}). Check API keys in .env."
                 if isinstance(e, openai.APIError) else f"Research stopped: {name}: {str(e)[:200]}.")
+        # LocalModelError / LocalUnavailable are not openai.APIError, so they never read as a key problem
         _post(conn, conv_id, task_id, text, "progress")
         return ""
     finally:
@@ -161,7 +180,7 @@ def _report_input(conn, t: dict, today: str) -> str:
             if f["value"] and f["status"] == "found":
                 src = f"{f['source_key']} p.{f['page']}" if f["source_key"] else f["source_url"]
                 parts.append(f"{head}: {f['value']} {f['unit'] or ''} [reported period: {f['reported_period'] or '?'}]"
-                             f" source: {src} | {'accepted' if f['accepted'] else 'unreviewed'} | quote: "
+                             f" source: {src} | {LEVELS[f['accepted'] or 0]} | quote: "
                              f"\"{f['quote']}\"")
             else:
                 gaps.append(f"{head}: {f['status']}{' - ' + f['note'] if f['note'] else ''}")
@@ -169,100 +188,3 @@ def _report_input(conn, t: dict, today: str) -> str:
     return "\n".join(parts)
 
 
-def _focus(st: dict, open_: list[dict]) -> dict:
-    ids = [f["id"] for f in open_]
-    if st["focus"] not in ids:
-        st["focus"] = ids[0]
-    return next(f for f in open_ if f["id"] == st["focus"])
-
-
-async def run_subtask(ctx, subtask_id: int) -> None:
-    logs.sub.set(subtask_id)
-    conn, conv = ctx.conn, ctx.conv_id
-    st = new_state(_row(conn, "subtasks", subtask_id))
-    _set(conn, conv, "subtasks", st, status="running")
-
-    async def ask(msgs):
-        return await _retry(conn, conv, "subtasks", st, lambda: cloud("checkin", msgs, conn))
-
-    since, escalate = 0, False
-    while True:
-        rows = checkin.fields_of(conn, subtask_id)
-        if all(_closed(f) for f in rows):
-            _set(conn, conv, "subtasks", st, status="done")
-            break
-        open_ = [f for f in rows if f["status"] == "open"]
-        need = ("confirm" if not open_ else "page budget" if not ctx.pages_left()
-                else "step limit" if st["round"] >= config.ROUNDS_PER_LOOP
-                else "stuck" if escalate or {f["id"] for f in open_} <= st["no_progress"]
-                else "routine" if since >= config.CHECKIN_EVERY else None)
-        if need:
-            allow = need != "page budget" and st["restarts"] < config.MAX_RESTARTS
-            log.info("check-in (%s), reopening %s", need, "allowed" if allow else "not allowed")
-            _set(conn, conv, "subtasks", st, status="checking_in")
-            res = await checkin.review(ctx, st, allow, ask)
-            since, escalate = 0, False
-            st["no_progress"].clear()
-            if res is None:
-                _set(conn, conv, "subtasks", st, status="partial")
-                break
-            if all(_closed(f) for f in checkin.fields_of(conn, subtask_id)):
-                _set(conn, conv, "subtasks", st, status="done")
-                break
-            if res == "steered" and need == "routine":  # hints only: keep going in this loop
-                res = "ok"
-            if res == "steered":  # at a step limit or stuck: the hints are a new direction, if a restart is left
-                res = "reopened" if allow else "blocked"
-            if res == "reopened":
-                log.info("check-in reopened work: loop %d, restart %d/%d", st["loop"] + 1, st["restarts"] + 1,
-                         config.MAX_RESTARTS)
-                _set(conn, conv, "subtasks", st, status="running", loop=st["loop"] + 1, round=0,
-                     restarts=st["restarts"] + 1)
-                continue
-            if res == "blocked" or need != "routine":  # no new direction and nothing left to try
-                _set(conn, conv, "subtasks", st, status="partial")
-                break
-            _set(conn, conv, "subtasks", st, status="running")
-        open_ = [f for f in checkin.fields_of(conn, subtask_id) if f["status"] == "open"]
-        if not open_:
-            continue
-        field = _focus(st, open_)
-        before = {f["id"]: (f["status"], f["value"]) for f in checkin.fields_of(conn, subtask_id)}
-        kind, arg = await explore.choose(ctx, st, field)
-        if kind == "escalate":
-            escalate = True
-            continue
-        n = st["round"] + 1
-        pages = 0
-        if kind == "doc":
-            had = set(st["read"].get(arg, set()))
-            pages = await docs.visit(ctx, st, arg)
-            label = f"{arg} {docs.page_ranges(st['read'].get(arg, set()) - had)}"
-        elif kind == "search":
-            pages = await explore.web_search(ctx, st, arg, field)
-            label = arg
-        else:
-            ctx.set_field(field, status="unavailable", accepted=0, note=f"Qwen: {arg}")
-            label = f"{field['name']}: not public ({arg})"
-        insert(conn, "rounds", subtask_id=subtask_id, loop=st["loop"], n=n, query=label, hits=pages)
-        _set(conn, conv, "subtasks", st, round=n, query=label)
-        events.publish(conv, {"type": "round", "round": {"subtask_id": subtask_id, "loop": st["loop"], "n": n,
-                                                          "query": label, "hits": pages}})
-        since += 1
-        after = {f["id"]: (f["status"], f["value"]) for f in checkin.fields_of(conn, subtask_id)}
-        if after != before:
-            st["stall"][field["id"]] = 0
-        else:
-            st["stall"][field["id"]] = st["stall"].get(field["id"], 0) + 1
-            if st["stall"][field["id"]] >= STALL_STEPS:
-                st["stall"][field["id"]] = 0
-                st["no_progress"].add(field["id"])
-                ids = [f["id"] for f in open_]
-                st["focus"] = ids[(ids.index(field["id"]) + 1) % len(ids)]
-                log.info("no progress on %r after %d steps, focus moves on", field["name"], STALL_STEPS)
-    rows = checkin.fields_of(conn, subtask_id)
-    filled = sum(_closed(f) for f in rows)
-    log.info("sub-task ended %s: %d/%d fields closed, %d pages read in research so far", st["status"], filled,
-             len(rows), ctx.pages_used)
-    _post(conn, conv, st["task_id"], f"Sub-task '{st['objective']}' ended {st['status']}: {filled}/{len(rows)} "
-          "fields filled or confirmed not public.", "progress")

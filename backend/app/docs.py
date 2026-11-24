@@ -1,19 +1,17 @@
-"""Documents: find planned PDFs once per research (free screen, then Qwen checks page 1), and let Qwen
-navigate a document page by page."""
+"""Documents: find planned PDFs once per research (free screen, then the local model checks page 1); PDFs
+met during research are checked the same way and shared as new documents."""
 import asyncio
 import json
 import logging
-import re
 
 from app.db import insert
-from app.fields import read_page
 from app.local_llm import WORK, parse_json, qwen
 from app.logs import clip
 from app.search import ddg, doc_score, key_word, mentions, name_words
 
 log = logging.getLogger(__name__)
 
-MAX_CANDIDATES, VISIT_PAGES, SHORT_DOC, FIRST_PAGE_MIN, MAX_SITE_SEARCHES = 3, 6, 10, 300, 2
+MAX_CANDIDATES, FIRST_PAGE_MIN, MAX_SITE_SEARCHES = 3, 300, 2
 
 
 def page_ranges(pages) -> str:
@@ -127,119 +125,3 @@ async def add_found_pdf(ctx, url: str, field: dict) -> dict | None:
     ctx.set_doc(row, status="verified", url=url, **r)
     log.info("web PDF %s shared as %s (%s)", url, row["key"], r["about"])
     return row
-
-
-_GENERIC = {"total", "ratio", "value", "rate", "amount", "percentage", "percent", "figure", "level", "details"}
-
-
-def search_terms(names: list[str]) -> list[str]:
-    """Phrases and distinctive words of field names to look for in a document: 'Total Debt' -> ['total debt', 'debt']."""
-    terms = []
-    for n in names:
-        words = re.findall(r"[a-z][a-z0-9&-]+", n.lower())
-        for t in [" ".join(words)] + [w for w in words if len(w) >= 4 and w not in _GENERIC]:
-            if t and t not in terms:
-                terms.append(t)
-    return terms[:12]
-
-
-async def keyword_pages(ctx, doc: dict, names: list[str], read: set) -> tuple[dict, list[int]]:
-    """Pages mentioning the fields (PDF text layer), and unread pages ranked: a field's full name counts 3, a
-    single word 1, best per field, summed over fields; so pages covering several fields by name come first."""
-    try:
-        found = await ctx.store.find(doc["url"], search_terms(names))
-    except Exception as e:  # no text layer, or the scan failed: contents only
-        log.info("keyword scan of %s failed: %r", doc["key"], e)
-        return {}, []
-    score: dict[int, int] = {}
-    for name in names:
-        best: dict[int, int] = {}
-        for t in search_terms([name]):
-            for p in found.get(t, []):
-                if p not in read:
-                    best[p] = max(best.get(p, 0), 3 if " " in t else 1)
-        for p, w in best.items():
-            score[p] = score.get(p, 0) + w
-    return found, sorted(score, key=lambda p: (-score[p], p))
-
-
-async def _pick(ctx, sub, doc: dict, n: int, read: set) -> int | None:
-    """Qwen picks where to read from the contents view; None means leave."""
-    c = await ctx.store.contents(doc["url"])
-    want = [f"{r['name']}" for r in ctx.conn.execute(
-        "select name from fields where subtask_id=? and status='open' order by id", (sub["id"],))]
-    view = ("Contents:\n" + "\n".join(f" [{i}] {t} .... {p}" for i, (t, p) in enumerate(c.entries, 1))
-            if c.entries else "Opening lines:\n" + c.raw)
-    found, ranked = await keyword_pages(ctx, doc, want, read)
-    # the reply example names the best-ranked page: a small model copies examples literally
-    best = ranked[0] if ranked else next((q for q in range(2, n + 1) if q not in read), 1)
-    if found:
-        view += "\nPages mentioning:\n" + "\n".join(
-            f" {t}: {', '.join(map(str, [p for p in ps if p not in read][:8])) or 'all read'}" for t, ps in found.items())
-    d = await _ask(f"{doc['key']} {doc['name']} ({n} pages). Looking for: {', '.join(want)}.\n{view}\n"
-                   f"Read so far: {page_ranges(read)}\nReply JSON only: "
-                   + (f'{{"open":1}} to read contents entry 1, {{"page":N}} for a PDF page (1-{n}), '
-                      if c.entries else f'{{"page":{best}}} to read PDF page {best} (pages 1-{n}), ')
-                   + '{"leave":true} if nothing here can help')
-    if d and d.get("leave") is True:
-        return None
-    d = d or {}
-    i, p = d.get("open"), d.get("page")
-    if isinstance(i, int) and not isinstance(i, bool) and 1 <= i <= len(c.entries):
-        title, printed = c.entries[i - 1]
-        page, ok = await ctx.store.locate(doc["url"], title, printed)
-        log.info("contents %r p.%d -> PDF page %d%s", title, printed, page, "" if ok else " (title not found)")
-        return page
-    if isinstance(p, int) and not isinstance(p, bool):
-        return min(max(p, 1), n)
-    # a muddled reply (no usable choice) is not a decision to leave: read the most-mentioned page, else the first
-    log.info("navigator reply %s has no usable choice; opening the best keyword page", clip(d, 120))
-    if ranked:
-        return ranked[0]
-    return next((q for q in range(1, n + 1) if q not in read), None)
-
-
-async def visit(ctx, sub, key: str) -> int:
-    """Qwen reads one document, up to 6 pages: short documents from page 1, longer ones from the contents."""
-    doc = ctx.doc(key)
-    read = sub["read"].setdefault(key, set())
-    try:
-        n = await ctx.store.pages(doc["url"])
-        count, nxt = 0, None
-        while count < VISIT_PAGES and ctx.pages_left():
-            unread = [p for p in range(1, n + 1) if p not in read]
-            if not unread:
-                sub["done_docs"].add(key)
-                break
-            if isinstance(nxt, int):
-                p = nxt
-            elif n <= SHORT_DOC:
-                p = unread[0]
-            else:
-                p = await _pick(ctx, sub, doc, n, read)
-                if p is None:
-                    if count == 0:  # chose this document, then read nothing: don't offer it again here
-                        log.info("left %s without reading; set aside for this sub-task", key)
-                        sub["done_docs"].add(key)
-                    break
-            if p in read or not 1 <= p <= n:  # already read: the next unread page after it
-                p = next((q for q in unread if q > p), unread[0])
-            text = await ctx.store.text(doc["url"], p)
-            read.add(p)
-            count += 1
-            want = [r["name"] for r in ctx.conn.execute(
-                "select name from fields where subtask_id=? and status='open' order by id", (sub["id"],))]
-            _, ranked = await keyword_pages(ctx, doc, want, read)
-            _, nxt = await read_page(ctx, sub, text, {"url": doc["url"], "title": doc["name"], "key": key,
-                                                      "page": p, "kind": "doc", "more": ranked[:6]}, nav=True)
-            if nxt == "leave":
-                break
-            if nxt == "contents" and n <= SHORT_DOC:
-                nxt = None
-        if len(read) >= n:
-            sub["done_docs"].add(key)
-        return count
-    except Exception as e:  # download/OCR failure: this document is done for this sub-task
-        log.warning("visit %s (%s) failed: %r", key, doc["url"], e)
-        sub["done_docs"].add(key)
-        return 0

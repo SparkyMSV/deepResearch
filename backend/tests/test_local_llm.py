@@ -109,7 +109,7 @@ def test_chat_gives_up_after_max_wait(fakes):
 def test_other_errors_raise(fakes):
     setup, _ = fakes
     setup(research=[openai.BadRequestError("bad", response=httpx.Response(400, request=REQ), body=None)])
-    with pytest.raises(openai.BadRequestError):
+    with pytest.raises(local_llm.LocalModelError):
         asyncio.run(local("research", [{"role": "user", "content": "x"}]))
 
 
