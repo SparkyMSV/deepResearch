@@ -14,10 +14,16 @@ log = logging.getLogger(__name__)
 
 _bg: set[asyncio.Task] = set()  # strong refs: asyncio keeps only weak references to tasks
 ROUTER_PROMPT = (
-    "You route a chat message. Reply with JSON only: "
+    "You route the user's last chat message. Reply with JSON only: "
     '{"action":"answer|search|task","query":"..."}. '
-    "answer: reply from the conversation. search: a quick web lookup (query = search query). "
-    "task: a deep multi-source research job (query = the research objective)."
+    "answer: reply from the conversation. search: a quick web lookup. "
+    "task: a deep multi-source research job. "
+    "query: a complete, standalone web search query (or research objective) for the last message. "
+    "Follow-ups refer back to earlier turns, so carry over their topic, country, time period and "
+    "entities, and drop chat words like 'search:' or 'how about'. Never add years or facts the user did "
+    "not mention; reuse the conversation's own time period. Example: after a search for Indian "
+    "insurance companies' revenue in 2026, 'how about for health insurance only' -> "
+    "'Indian health insurance companies revenue 2026'."
 )
 ANSWER_PROMPT = ("You are a helpful research assistant. Answer using the conversation and the evidence below. "
                  "Cite the URL of any evidence you use.")
@@ -90,15 +96,22 @@ async def _handle(conn, conv_id: int, text: str) -> None:
     _status(conv_id, "thinking")
     mode, _, rest = text.partition(":")
     mode = mode.strip().lower()
-    if mode in ("search", "task") and rest.strip():
+    forced = mode in ("search", "task") and rest.strip()
+    history = _history(conn, conv_id)
+    if forced and len(history) <= 1:  # first message: nothing to resolve, use it as typed
         action, query = mode, rest.strip()
     else:
-        raw = parse_json(await qwen([{"role": "system", "content": ROUTER_PROMPT}, *_history(conn, conv_id)],
+        # the router also frames follow-ups into standalone queries, so forced modes use it too
+        # user turns only: Qwen's own replies leak stray details (years, entities) into the query
+        asked = [m for m in history if m["role"] == "user"]
+        raw = parse_json(await qwen([{"role": "system", "content": ROUTER_PROMPT}, *asked],
                                     priority=CHAT, max_tokens=100))
         raw = raw if isinstance(raw, dict) else {}
         action = raw.get("action") if raw.get("action") in ("search", "task") else "answer"
         q = raw.get("query")
-        query = q.strip() if isinstance(q, str) and q.strip() else text
+        query = q.strip() if isinstance(q, str) and q.strip() else (rest.strip() if forced else text)
+        if forced:
+            action = mode
     if action == "search":
         _status(conv_id, "searching")
         results = [{"title": h.title, "url": h.url, "snippet": h.snippet} for h in await search(query, query, CHAT)]

@@ -146,3 +146,20 @@ def test_search_publishes_searching_status(monkeypatch):
     asyncio.run(chat.handle_message(env.conn, env.conv, "search: x"))
     texts = [e["text"] for e in env.events if e["type"] == "status"]
     assert texts[:2] == ["thinking", "searching"] and texts[-1] is None
+
+
+def test_followup_forced_search_query_framed_from_context(monkeypatch):
+    env = Env(monkeypatch)
+    asyncio.run(chat.handle_message(env.conn, env.conv, "search: indian insurance companies revenue 2026"))
+    env.router = '{"action":"answer","query":"Indian health insurance companies revenue 2026"}'
+    asyncio.run(chat.handle_message(env.conn, env.conv, "search: how about for health insurance only"))
+    assert env.searches[-1][0] == "Indian health insurance companies revenue 2026"
+    assert env.msgs()[-2]["kind"] == "search_results"  # the prefix still forces search mode
+
+
+def test_followup_search_falls_back_to_typed_text(monkeypatch):
+    env = Env(monkeypatch)
+    asyncio.run(chat.handle_message(env.conn, env.conv, "search: a"))
+    env.router = "not json"
+    asyncio.run(chat.handle_message(env.conn, env.conv, "search: b"))
+    assert env.searches[-1][0] == "b"
