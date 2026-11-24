@@ -91,10 +91,13 @@ async def cloud(role: str, messages: list[dict], conn: sqlite3.Connection) -> st
         t0 = time.monotonic()
         try:
             resp = await _client(config.PROVIDER[model]).chat.completions.create(model=model, messages=messages)
-        except openai.RateLimitError:  # per-minute limit: cool down briefly; daily limit is the local counter
+        # 429 per-minute limit, 5xx overload ("high demand"), timeout or network blip: all temporary, so cool
+        # this model down briefly and try the next one; the daily limit is the local counter
+        except (openai.RateLimitError, openai.InternalServerError, openai.APIConnectionError) as e:
             _cool[model] = time.monotonic() + COOLDOWN_SECONDS
             cooling = True
-            log.warning("cloud %s: %s rate-limited (429), cooling down %ds", role, model, COOLDOWN_SECONDS)
+            log.warning("cloud %s: %s temporarily unavailable after %.1fs (%s), cooling down %ds", role, model,
+                        time.monotonic() - t0, getattr(e, "status_code", None) or type(e).__name__, COOLDOWN_SECONDS)
             continue
         except Exception as e:
             log.error("cloud %s: %s failed after %.1fs: %r", role, model, time.monotonic() - t0, e)

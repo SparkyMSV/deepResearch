@@ -120,3 +120,34 @@ def test_client_cached_per_provider(setup):
     asyncio.run(cloud_llm.cloud("checkin", MSGS, conn))
     asyncio.run(cloud_llm.cloud("checkin", MSGS, conn))
     assert made == ["groq"]
+
+
+@pytest.mark.parametrize("err", [
+    openai.InternalServerError("high demand", response=httpx.Response(503, request=httpx.Request("POST", "http://x")),
+                               body=None),
+    openai.APITimeoutError(request=httpx.Request("POST", "http://x")),
+])
+def test_overload_or_timeout_falls_back_then_waits(setup, err):
+    conn, fake = setup
+
+    async def flaky(model, messages):
+        fake.calls.append(model)
+        raise err
+
+    fake.create = flaky
+    with pytest.raises(cloud_llm.QuotaExhausted) as e:  # every model busy: the task engine waits and retries
+        asyncio.run(cloud_llm.cloud("pdf", MSGS, conn))
+    assert fake.calls == ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+    assert e.value.retry_after == cloud_llm.COOLDOWN_SECONDS
+
+
+def test_bad_key_still_raises(setup):
+    conn, fake = setup
+
+    async def denied(model, messages):
+        raise openai.AuthenticationError("bad key", response=httpx.Response(
+            401, request=httpx.Request("POST", "http://x")), body=None)
+
+    fake.create = denied
+    with pytest.raises(openai.AuthenticationError):
+        asyncio.run(cloud_llm.cloud("pdf", MSGS, conn))
