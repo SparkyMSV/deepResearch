@@ -160,3 +160,13 @@ def test_verdict_for_one_company_does_not_block_another(monkeypatch):
     t = {"type": "rating rationale", "period": "FY26"}
     assert asyncio.run(docs.verify(c, NAVI, {"issuer": "CRISIL", **t})) is None
     assert asyncio.run(docs.verify(c, NAVI, {"issuer": "Navi Finserv Limited", **t}))["about"] == "CARE"
+
+
+def test_find_document_keeps_searching_hosts_until_enough_candidates(monkeypatch):
+    store = FakeStore({NAVI: ["Navi Finserv annual report"]})
+    q = ScriptedQwen(("Another year is fine", {"match": True, "about": "Navi AR"}))
+    c, _ = make(monkeypatch, store, q)
+    by_query = {"site:navi.com": [Hit("Navi Finserv annual report", NAVI, "")]}
+    monkeypatch.setattr(docs, "ddg", lambda qy: c.searched.append(qy) or next((v for k, v in by_query.items() if k in qy), []))
+    asyncio.run(docs.find_document(c, plan_doc(c)))
+    assert c.doc("D1")["status"] == "verified" and len(c.searched) == 3 and "site:navi.com" in c.searched[2]

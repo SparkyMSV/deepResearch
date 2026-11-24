@@ -12,7 +12,7 @@ from app.search import ddg, doc_score, key_word, mentions, name_words
 
 log = logging.getLogger(__name__)
 
-MAX_CANDIDATES, VISIT_PAGES, SHORT_DOC, FIRST_PAGE_MIN = 3, 6, 10, 300
+MAX_CANDIDATES, VISIT_PAGES, SHORT_DOC, FIRST_PAGE_MIN, MAX_SITE_SEARCHES = 3, 6, 10, 300, 2
 
 
 def page_ranges(pages) -> str:
@@ -78,16 +78,23 @@ async def find_document(ctx, doc: dict) -> None:
     """Search for a planned document, screen candidates for free, verify up to 3, keep the first match."""
     words = name_words(doc["issuer"] or doc["name"])
     brand = {w} if (w := key_word(doc["issuer"] or doc["name"])) else words
-    pdfs = []
-    for q in (doc["search"], f"{doc['issuer']} {doc['type']} {doc['period']} pdf"):
-        pdfs = [h for h in await asyncio.to_thread(ddg, q) if _is_pdf(h.url)]
-        if pdfs:
-            break
     domains = json.loads(doc.get("domains") or "[]")
-    keep = [h for h in pdfs if mentions(h, brand)]
-    for h in pdfs:
-        if h not in keep:
-            log.info("document %s: screened out %s (no %s in URL/title/snippet)", doc["key"], h.url, sorted(brand))
+    # several searches: the planner's, a generic one, then the likely hosts (issuer site, exchanges); stop once
+    # there are enough candidates that name the company
+    queries = [doc["search"], f"{doc['issuer']} {doc['type']} {doc['period']} pdf"] + \
+        [f"{doc['issuer']} {doc['type']} site:{d}" for d in domains[:MAX_SITE_SEARCHES]]
+    keep, seen = [], set()
+    for q in dict.fromkeys(x for x in queries if x.strip()):
+        for h in await asyncio.to_thread(ddg, q):
+            if not _is_pdf(h.url) or h.url in seen:
+                continue
+            seen.add(h.url)
+            if mentions(h, brand):
+                keep.append(h)
+            else:
+                log.info("document %s: screened out %s (no %s in URL/title/snippet)", doc["key"], h.url, sorted(brand))
+        if len(keep) >= MAX_CANDIDATES:
+            break
     keep.sort(key=lambda h: -doc_score(h, words, doc["period"], domains))
     expect = {"issuer": doc["issuer"] or doc["name"], "type": doc["type"] or "document", "period": doc["period"]}
     for h in keep[:MAX_CANDIDATES]:
