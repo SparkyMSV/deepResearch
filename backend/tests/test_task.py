@@ -29,7 +29,7 @@ class Env:
         monkeypatch.setattr(task, "cloud", self.cloud)
         monkeypatch.setattr(task, "read_pdf", self.read_pdf)
 
-    async def search(self, query, objective, priority=None):
+    async def search(self, query, objective, priority=None, seen=None):
         self.searches.append(query)
         return self.hits(query)
 
@@ -37,7 +37,7 @@ class Env:
         return [f"fact from {hit.url}"]
 
     async def qwen(self, messages, priority=None, max_tokens=800):
-        return json.dumps({"query": self.searches[-1] if self.searches else "q"})
+        return json.dumps({"query": f"q{len(self.searches)}"})  # a new query each round
 
     async def read_pdf(self, url, objective, subtask_id, loop, conn):
         self.pdf_calls.append(url)
@@ -243,3 +243,34 @@ def test_cooldown_retry_waits_retry_after(monkeypatch):
     monkeypatch.setattr(task.asyncio, "sleep", fake_sleep)
     env.run_subtask(env.subtask())
     assert slept == [60]
+
+
+def test_repeated_rewrite_asks_again_then_escalates(monkeypatch):
+    env = Env(monkeypatch, checkins=[{"decision": "continue", "query": "from supervisor"},
+                                     {"decision": "sufficient"}])
+    asked = []
+
+    async def repeats(messages, priority=None, max_tokens=800):
+        asked.append(messages[-1]["content"])
+        return json.dumps({"query": "Q0"})  # same words as the first query "q0"
+
+    monkeypatch.setattr(env, "qwen", repeats)
+    monkeypatch.setattr(task, "qwen", repeats)
+    sid = env.subtask()
+    st = env.run_subtask(sid)
+    assert env.searches[:2] == ["q0", "from supervisor"]  # never searched "Q0"
+    assert len(asked) >= 3 and "already tried" in asked[2]
+    assert env.checkin_at[0] == 1  # stuck after round 1: check-in right away
+    assert st["status"] == "done"
+
+
+def test_stuck_without_new_supervisor_query_ends_partial(monkeypatch):
+    env = Env(monkeypatch, checkins=[{"decision": "continue", "query": "q0"}])
+
+    async def repeats(messages, priority=None, max_tokens=800):
+        return json.dumps({"query": "q0"})
+
+    monkeypatch.setattr(task, "qwen", repeats)
+    sid = env.subtask()
+    st = env.run_subtask(sid)
+    assert st["status"] == "partial" and env.searches == ["q0"]

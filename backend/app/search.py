@@ -64,12 +64,27 @@ def fetch(hit: Hit) -> Hit | None:
         return None
 
 
-async def search(query: str, objective: str, priority: int = WORK) -> list[Hit]:
+def url_key(url: str) -> str:
+    return url.split("#")[0].rstrip("/")
+
+
+async def search(query: str, objective: str, priority: int = WORK, seen: set[str] | None = None) -> list[Hit]:
+    """seen: URL keys already handled by the caller; those results are skipped and new ones are added."""
     log.info("search %r (region %s, max %d)", query, config.SEARCH_REGION, config.SEARCH_MAX_RESULTS)
     found = await asyncio.to_thread(ddg, query)
     log.info("ddg returned %d results", len(found))
     for i, h in enumerate(found):
         log.info("  result %d: %s | %s", i, h.url, clip(h.title, 90))
+    if seen is not None:
+        fresh = []
+        for h in found:
+            if url_key(h.url) in seen:
+                log.info("  skip (already read): %s", h.url)
+            else:
+                seen.add(url_key(h.url))
+                fresh.append(h)
+        log.info("%d new result(s) after skipping already-read URLs", len(fresh))
+        found = fresh
     fetched = await asyncio.gather(*(asyncio.to_thread(fetch, h) for h in found))
     hits = [h for h in fetched if h]
     log.info("fetched %d/%d readable: %s", len(hits), len(found), ", ".join(h.url for h in hits) or "none")

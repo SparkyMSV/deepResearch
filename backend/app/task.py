@@ -1,6 +1,7 @@
 """Task engine: cloud plan, per-sub-task search loop on Qwen, cloud check-ins, cited report."""
 import asyncio
 import logging
+import re
 from dataclasses import asdict
 
 import openai
@@ -28,7 +29,8 @@ PLAN_PROMPT = (
     '"needs_document":"name of a specific document to find as a PDF, or empty string"}}]}}'
 )
 CHECKIN_PROMPT = (
-    "You supervise a web research loop. Judge whether the evidence answers the objective. Reply with JSON only: "
+    "You supervise a web research loop. Judge whether the evidence answers the objective. "
+    "Any query you give must differ from the queries so far. Reply with JSON only: "
     '{"decision":"continue|sufficient|restart","query":"next query","objective":"refined objective",'
     '"off_target_loops":[loop numbers whose evidence is off-target]}'
 )
@@ -160,8 +162,20 @@ def _report_input(conn, t: dict) -> str:
     return "\n".join(parts)
 
 
-async def _round(conn, st: dict, query: str, seen: set[str]) -> int:
-    hits = await search(query, st["objective"], priority=WORK)
+def _qkey(q: str) -> frozenset[str]:
+    """Same words in any order or case count as the same query."""
+    return frozenset(re.findall(r"\w+", q.lower()))
+
+
+def _fresh(q, queries: list[str]) -> str | None:
+    """q stripped, or None if it's not a usable string or repeats a query already tried."""
+    if not isinstance(q, str) or not q.strip():
+        return None
+    return None if _qkey(q) in {_qkey(x) for x in queries} else q.strip()
+
+
+async def _round(conn, st: dict, query: str, seen: set[str], urls: set[str]) -> int:
+    hits = await search(query, st["objective"], priority=WORK, seen=urls)
     added = 0
     for hit in hits:
         if hit.is_pdf:
@@ -213,15 +227,21 @@ async def _checkin(conn, conv_id: int, st: dict, queries: list[str]) -> dict | N
     return d
 
 
-async def _rewrite(st: dict, query: str, queries: list[str]) -> str:
+async def _rewrite(st: dict, query: str, queries: list[str]) -> str | None:
+    """Qwen's next query, or None if after 3 tries it only repeats queries already tried."""
     user = (f"Objective: {st['objective']}\nQueries tried:\n" + "\n".join(queries)
-            + '\nWrite the next web search query to find missing facts. Reply with JSON only: {"query":"..."}')
-    new = (parse_json(await qwen([{"role": "user", "content": user}], priority=WORK)) or {}).get("query")
-    if isinstance(new, str) and new.strip():
-        log.info("query rewrite: %r -> %r", query, new.strip())
-        return new.strip()
-    log.warning("query rewrite unusable, keeping %r", query)
-    return query
+            + "\nWrite the next web search query to find missing facts. It must differ from every query "
+            'tried. Reply with JSON only: {"query":"..."}')
+    for _ in range(3):
+        raw = (parse_json(await qwen([{"role": "user", "content": user}], priority=WORK)) or {}).get("query")
+        new = _fresh(raw, queries)
+        if new:
+            log.info("query rewrite: %r -> %r", query, new)
+            return new
+        log.info("query rewrite %r is unusable or already tried, asking again", raw)
+        user += f"\n{raw!r} is not allowed: it was already tried or is empty."
+    log.warning("query rewrite: no new query after 3 tries")
+    return None
 
 
 async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
@@ -232,17 +252,20 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
     seen = _pdf_seen.setdefault(st["task_id"], set())
     query = f"{st['needs_document']} pdf" if st["needs_document"] else st["query"]
     queries: list[str] = []
+    urls: set[str] = set()  # pages already read by this sub-task; later rounds skip them
+    stuck = False  # Qwen ran out of new queries: ask the supervisor now instead of searching
     _set(conn, conv_id, "subtasks", st, status="running")
     while True:
-        n = st["round"] + 1
-        log.info("round L%d·%d: query %r", st["loop"], n, query)
-        hits = await _round(conn, st, query, seen)
-        insert(conn, "rounds", subtask_id=subtask_id, loop=st["loop"], n=n, query=query, hits=hits)
-        queries.append(query)
-        _set(conn, conv_id, "subtasks", st, round=n, query=query)
-        events.publish(conv_id, {"type": "round", "round": {"subtask_id": subtask_id, "loop": st["loop"],
-                                                             "n": n, "query": query, "hits": hits}})
-        if n % config.CHECKIN_EVERY == 0 or n >= config.ROUNDS_PER_LOOP:
+        if not stuck:
+            n = st["round"] + 1
+            log.info("round L%d·%d: query %r", st["loop"], n, query)
+            hits = await _round(conn, st, query, seen, urls)
+            insert(conn, "rounds", subtask_id=subtask_id, loop=st["loop"], n=n, query=query, hits=hits)
+            queries.append(query)
+            _set(conn, conv_id, "subtasks", st, round=n, query=query)
+            events.publish(conv_id, {"type": "round", "round": {"subtask_id": subtask_id, "loop": st["loop"],
+                                                                 "n": n, "query": query, "hits": hits}})
+        if stuck or n % config.CHECKIN_EVERY == 0 or n >= config.ROUNDS_PER_LOOP:
             _set(conn, conv_id, "subtasks", st, status="checking_in")
             d = await _checkin(conn, conv_id, st, queries)
             if d is None:
@@ -273,12 +296,25 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
                 _set(conn, conv_id, "subtasks", st, status="restarted", restarts=st["restarts"] + 1,
                      loop=st["loop"] + 1, round=0, objective=str(new_obj or st["objective"]))
                 _set(conn, conv_id, "subtasks", st, status="running")
-                if decision == "restart" and isinstance(d.get("query"), str) and d["query"].strip():
-                    query = d["query"].strip()
+                stuck = False
+                if decision == "restart" and (q := _fresh(d.get("query"), queries)):
+                    query = q
                     continue
             else:
                 _set(conn, conv_id, "subtasks", st, status="running")
-        query = await _rewrite(st, query, queries)
+                if stuck:
+                    if not (q := _fresh(d.get("query"), queries)):
+                        log.info("no new query from Qwen or the supervisor, ending partial")
+                        _set(conn, conv_id, "subtasks", st, status="partial")
+                        break
+                    log.info("using the supervisor's query %r", q)
+                    query, stuck = q, False
+                    continue
+        new = await _rewrite(st, query, queries)
+        if new is None:
+            stuck = True
+        else:
+            query = new
     count = conn.execute("select count(*) from evidence where subtask_id=? and off_target=0",
                          (subtask_id,)).fetchone()[0]
     log.info("sub-task ended %s after %d loop(s): %d usable passages", st["status"], st["loop"] + 1, count)

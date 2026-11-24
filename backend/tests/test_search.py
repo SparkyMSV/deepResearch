@@ -146,3 +146,13 @@ def test_ddg_uses_configured_region(monkeypatch):
     monkeypatch.setattr(search.config, "SEARCH_REGION", "in-en")
     search.ddg("q")
     assert got["region"] == "in-en"
+
+
+def test_search_skips_seen_urls(monkeypatch):
+    hs = [Hit("a", "http://a/#top", "s"), Hit("b", "http://b", "s"), Hit("b2", "http://b/", "s")]
+    fetched = []
+    monkeypatch.setattr(search, "ddg", lambda q: hs)
+    monkeypatch.setattr(search, "fetch", lambda h: fetched.append(h.url) or None)
+    seen = {"http://a"}
+    asyncio.run(search.search("q", "obj", seen=seen))
+    assert fetched == ["http://b"] and seen == {"http://a", "http://b"}
