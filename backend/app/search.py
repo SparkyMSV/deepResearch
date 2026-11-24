@@ -27,13 +27,21 @@ def _norm(s: str) -> str:
     return " ".join(s.split())
 
 
-def ddg(query: str) -> list[Hit]:
-    try:
-        rows = DDGS().text(query, max_results=config.SEARCH_MAX_RESULTS, region=config.SEARCH_REGION)
-        return [Hit(r.get("title", ""), r["href"], r.get("body", "")) for r in rows]
-    except Exception as e:
-        log.warning("ddg failed for %r: %r", query, e)
-        return []
+def ddg(query: str, max_results: int | None = None) -> list[Hit]:
+    """Web search over several engines at once (ddgs merges and de-duplicates them); if none answers
+    (engines block scrapers from time to time), one retry lets ddgs pick any engine."""
+    n = max_results or config.SEARCH_MAX_RESULTS
+    for backend in dict.fromkeys((config.SEARCH_BACKENDS, "auto")):
+        try:
+            rows = DDGS().text(query, max_results=n, region=config.SEARCH_REGION, backend=backend)
+        except Exception as e:
+            log.warning("search %r via %s: %r", query, backend, e)
+            continue
+        if rows:
+            hits = [Hit(r.get("title", ""), r["href"], r.get("body", "")) for r in rows]
+            log.info("search %r via %s: %d results", query, backend, len(hits))
+            return hits
+    return []
 
 
 def fetch(hit: Hit) -> Hit | None:

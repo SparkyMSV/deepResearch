@@ -31,7 +31,7 @@ def test_ddg_error_returns_empty(monkeypatch):
 
 def test_ddg_maps_fields(monkeypatch):
     class D:
-        def text(self, q, max_results, region):
+        def text(self, q, max_results, region, backend):
             return [{"title": "T", "href": "http://a", "body": "B"}]
 
     monkeypatch.setattr(search, "DDGS", D)
@@ -211,3 +211,19 @@ def test_screen_uses_the_brand_word_not_any_word():
     navi = Hit("Navi results", "https://navi.com/r", "")
     assert search.key_word("Navi Finserv Limited") == "navi"
     assert search.order_by_entity([bajaj, navi], "Navi Finserv Limited") == [navi, bajaj]
+
+
+def test_ddg_uses_backends_and_falls_back(monkeypatch):
+    calls = []
+
+    class D:
+        def text(self, q, **k):
+            calls.append((k["backend"], k["max_results"]))
+            if k["backend"] != "auto":
+                raise RuntimeError("No results found.")
+            return [{"title": "T", "href": "http://a", "body": "B"}]
+
+    monkeypatch.setattr(search, "DDGS", D)
+    monkeypatch.setattr(search.config, "SEARCH_BACKENDS", "yahoo,bing")
+    assert search.ddg("q", 20) == [Hit("T", "http://a", "B")]
+    assert calls == [("yahoo,bing", 20), ("auto", 20)]
