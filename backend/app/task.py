@@ -196,10 +196,12 @@ def _qkey(q: str) -> frozenset[str]:
 
 
 def _fresh(q, queries: list[str]) -> str | None:
-    """q stripped, or None if it's not a usable string or repeats a query already tried."""
+    """q stripped, or None if it's not a usable string or (nearly) repeats a query already tried."""
     if not isinstance(q, str) or not q.strip():
         return None
-    return None if _qkey(q) in {_qkey(x) for x in queries} else q.strip()
+    k = _qkey(q)
+    # 80%+ shared words is the same search reworded, e.g. "... yield 2024 2025" vs "... yield 2024 2025 latest"
+    return None if any(len(k & _qkey(x)) >= 0.8 * len(k | _qkey(x)) for x in queries) else q.strip()
 
 
 async def _read_doc(conn, st: dict, url: str) -> list[Evidence]:
@@ -279,34 +281,34 @@ async def _next(conn, st: dict, query: str, queries: list[str]) -> tuple[str, st
     new web search, or None if after 3 tries it only repeats queries already tried."""
     docs = [(u, a) for u, a in _task_docs.get(st["task_id"], {}).items() if u not in st["pdf_done"]] \
         if st["pdf_reads"] < MAX_PDFS_PER_SUBTASK else []
-    user = f"Objective: {st['objective']}\nQueries tried:\n" + "\n".join(queries)
-    if st["needs_document"] and not conn.execute(
-            "select 1 from evidence where subtask_id=? and page is not null", (st["id"],)).fetchone():
-        user += (f"\nThe figures should come from the PDF \"{st['needs_document']}\". If it is listed below, "
-                 "read it; else aim the query at it (add 'pdf' or the publisher's site).")
-    if docs:
-        user += ("\nPDFs found in this research:\n"
-                 + "\n".join(f"[{i}] {a}; " + (f"you read {len(st['pdf_pages'][u])} page(s), more may help"
-                                                if u in st["pdf_pages"] else "not read by you")
-                              for i, (u, a) in enumerate(docs))
-                 + '\nIf one likely has the missing facts, reply {"read":N} (reads pages not read yet). Otherwise '
-                 'write a new web search query that differs from every query tried: {"query":"..."}. JSON only.')
-    else:
-        user += ("\nWrite the next web search query to find missing facts. It must differ from every query "
-                 'tried. Reply with JSON only: {"query":"..."}')
-    for _ in range(3):
-        d = parse_json(await qwen([{"role": "user", "content": user}], priority=WORK)) or {}
-        i = d.get("read")
+    if docs:  # PDFs first, asked on its own: a small model given "PDF or query" almost always writes a query
+        ask = (f"Objective: {st['objective']}\nPDFs found:\n"
+               + "\n".join(f"[{i}] {a}; " + (f"you read {len(st['pdf_pages'][u])} page(s), more may help"
+                                              if u in st["pdf_pages"] else "not read by you")
+                            for i, (u, a) in enumerate(docs))
+               + '\nWhich PDF most likely has facts for the objective? Reply JSON only: {"read":N}, '
+                 'or {"read":null} if none fits.')
+        i = (parse_json(await qwen([{"role": "user", "content": ask}], priority=WORK)) or {}).get("read")
         i = int(i) if isinstance(i, str) and i.isdigit() else i
         if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(docs):
             log.info("next step: read PDF %s (%s)", docs[i][0], docs[i][1])
             return "pdf", docs[i][0]
+        log.info("next step: none of %d PDFs fits, searching the web", len(docs))
+    user = f"Objective: {st['objective']}\nQueries tried:\n" + "\n".join(queries)
+    if st["needs_document"] and not conn.execute(
+            "select 1 from evidence where subtask_id=? and page is not null", (st["id"],)).fetchone():
+        user += (f"\nThe figures should come from the PDF \"{st['needs_document']}\". "
+                 "Aim the query at it (add 'pdf' or the publisher's site).")
+    user += ("\nWrite the next web search query to find missing facts. It must differ from every query "
+             'tried. Reply with JSON only: {"query":"..."}')
+    for _ in range(3):
+        d = parse_json(await qwen([{"role": "user", "content": user}], priority=WORK)) or {}
         new = _fresh(d.get("query"), queries)
         if new:
             log.info("query rewrite: %r -> %r", query, new)
             return "search", new
         log.info("next step %s is unusable or already tried, asking again", clip(d, 120))
-        user += f"\n{clip(d, 120)} is not allowed: not a listed PDF, or the query was already tried or empty."
+        user += f"\n{clip(d, 120)} is not allowed: empty, or too close to a query already tried."
     log.warning("next step: no new query after 3 tries")
     return None
 

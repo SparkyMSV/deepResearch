@@ -123,3 +123,21 @@ def test_deeper_read_skips_pages_already_read(monkeypatch, pdf_bytes):
     r = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:"), skip=[9]))
     assert "Pages [9] were already read" in prompts[0]
     assert r.pages == [8, 10] and "[page 9]" not in prompts[1]
+
+
+def test_note_lists_contents_and_download_looks_like_a_browser(monkeypatch, pdf_bytes):
+    sent = {}
+
+    def get(url, **k):
+        sent.update(k.get("headers") or {})
+        return Resp(pdf_bytes)
+
+    monkeypatch.setattr(pdf.requests, "get", get)
+
+    async def fake_cloud(role, messages, conn):
+        return '{"about": "Acme Ltd annual report FY2024", "covers": "financial statements, asset quality", "pages": []}'
+
+    monkeypatch.setattr(pdf, "cloud", fake_cloud)
+    r = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
+    assert r.about == "Acme Ltd annual report FY2024; covers financial statements, asset quality (12 pages)"
+    assert "Mozilla" in sent["User-Agent"]

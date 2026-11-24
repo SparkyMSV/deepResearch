@@ -19,6 +19,7 @@ from app.cloud_llm import cloud
 from app.db import Evidence
 from app.local_llm import parse_json
 from app.logs import clip
+from app.search import _HEADERS
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ def _converter():
 
 
 def _download(url: str, path: str) -> None:
-    with requests.get(url, stream=True, timeout=config.FETCH_TIMEOUT) as r:
+    with requests.get(url, stream=True, timeout=config.FETCH_TIMEOUT, headers=_HEADERS) as r:  # BSE etc. 403 bots
         r.raise_for_status()
         size = 0
         with open(path, "wb") as f:
@@ -95,10 +96,13 @@ async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn, s
                if skip else "")
             + 'Using the contents, pick the pages most likely to answer the objective. '
             'Printed page numbers in the contents may be offset from the [page N] tags; use the tags. '
-            'Also say what the document is in at most 12 words (issuer, type, period). '
-            'Reply as JSON only: {"about": "...", "pages": [[start, end], ...]} (1-based, inclusive).')}], conn)
+            'Also say what the document is in at most 12 words (issuer, type, period), and list its main '
+            'contents in at most 12 words. '
+            'Reply as JSON only: {"about": "...", "covers": "...", "pages": [[start, end], ...]} '
+            '(1-based, inclusive).')}], conn)
         t = parse_json(triage) or {}
-        about = f"{clip(t.get('about') or url.split('?')[0].rsplit('/', 1)[-1], 100)} ({n} pages)"
+        covers = f"; covers {clip(t['covers'], 100)}" if isinstance(t.get("covers"), str) and t["covers"] else ""
+        about = f"{clip(t.get('about') or url.split('?')[0].rsplit('/', 1)[-1], 100)}{covers} ({n} pages)"
         log.info("pdf %s: about %r", url, about)
         pages = [p for p in _page_list(t.get("pages"), n) if p not in skip]
         if not pages:

@@ -343,3 +343,9 @@ def test_subtask_is_offered_pdfs_found_by_others_and_qwen_decides(monkeypatch):
     assert any("not read by you" in a for a in asked) and any("you read 1 page(s)" in a for a in asked)
     assert env.conn.execute("select count(*) from evidence where subtask_id=? and page=9",
                             (second,)).fetchone()[0] == 1
+
+
+def test_near_duplicate_query_is_rejected():
+    tried = ["Navi Finserv NCD public issue interest rate yield 2024 2025"]
+    assert task._fresh("Navi Finserv NCD public issue interest rate yield 2024 2025 latest", tried) is None
+    assert task._fresh("Navi Finserv CARE rating rationale", tried) == "Navi Finserv CARE rating rationale"
