@@ -137,7 +137,7 @@ def test_overload_or_timeout_falls_back_then_waits(setup, err):
     fake.create = flaky
     with pytest.raises(cloud_llm.QuotaExhausted) as e:  # every model busy: the task engine waits and retries
         asyncio.run(cloud_llm.cloud("pdf", MSGS, conn))
-    assert fake.calls == ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+    assert fake.calls == ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "qwen/qwen3.8-27b"]
     assert e.value.retry_after == cloud_llm.COOLDOWN_SECONDS
 
 
@@ -151,3 +151,15 @@ def test_bad_key_still_raises(setup):
     fake.create = denied
     with pytest.raises(openai.AuthenticationError):
         asyncio.run(cloud_llm.cloud("pdf", MSGS, conn))
+
+
+def test_pdf_falls_back_to_groq_and_reports_the_switch(setup):
+    conn, fake = setup
+    fake.fail = {"gemini-3.1-flash-lite", "gemini-3.5-flash-lite"}
+    seen = []
+    token = cloud_llm.on_fallback.set(lambda failed, used: seen.append((failed, used)))
+    try:
+        assert asyncio.run(cloud_llm.cloud("pdf", MSGS, conn)) == "from:qwen/qwen3.8-27b"
+    finally:
+        cloud_llm.on_fallback.reset(token)
+    assert seen == [(["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"], "qwen/qwen3.8-27b")]

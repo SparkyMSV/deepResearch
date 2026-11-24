@@ -8,7 +8,7 @@ const sub = (o) => ({ id: 2, task_id: 1, objective: 'Find prices', status: 'runn
 
 describe('TaskChecklist', () => {
   it.each([
-    ['paused_quota', 'Paused — quota exhausted, resumes after reset'],
+    ['paused_quota', 'Paused — Gemini and Groq unavailable, retrying'],
     ['interrupted', 'Interrupted — server restarted. Ask again to rerun.'],
     ['failed', 'Stopped'],
   ])('shows task-level %s with no sub-tasks', (status, text) => {
@@ -26,7 +26,7 @@ describe('TaskChecklist', () => {
       sub({ id: 2, status: 'paused_quota' }),
       sub({ id: 3, status: 'checking_in', restarts: 1 }),
     ])} />)
-    expect(screen.getByText('paused — quota exhausted, resumes after reset')).toBeTruthy()
+    expect(screen.getByText('paused — models unavailable, retrying')).toBeTruthy()
     expect(screen.getByText('checking in · restart 1')).toBeTruthy()
   })
 

@@ -7,7 +7,7 @@ from dataclasses import asdict
 import openai
 
 from app import config, events, logs
-from app.cloud_llm import QuotaExhausted, cloud
+from app.cloud_llm import QuotaExhausted, cloud, on_fallback
 from app.db import Evidence, insert, update
 from app.local_llm import WORK, parse_json, qwen
 from app.pdf import read_pdf
@@ -21,6 +21,7 @@ MAX_PDFS_PER_SUBTASK = 5  # each PDF read costs cloud "pdf" quota
 CHECKIN_MAX_CHARS, REPORT_MAX_CHARS = 12_000, 60_000
 _FIELDS = {"tasks": ("id", "status", "objective"),
            "subtasks": ("id", "task_id", "objective", "status", "round", "loop", "restarts")}
+_paused: dict[int, int] = {}  # task_id -> how many of its calls are waiting for a cloud model
 _task_docs: dict[int, dict[str, str]] = {}  # task_id -> {PDF url: one-line note}; offered to every sub-task
 
 PLAN_PROMPT = (
@@ -76,13 +77,20 @@ async def _retry(conn, conv_id: int, table: str, row: dict, make):
             out = await make()
             break
         except QuotaExhausted as e:
+            wait = e.retry_after or QUOTA_RETRY_SECONDS
             if prev is None:
                 prev = row["status"]
                 _set(conn, conv_id, table, row, status="paused_quota")
-            wait = e.retry_after or QUOTA_RETRY_SECONDS
+                task_id = row.get("task_id", row["id"])
+                _paused[task_id] = _paused.get(task_id, 0) + 1
+                if _paused[task_id] == 1:  # tell the user once per pause, not once per sub-task
+                    _post(conn, conv_id, task_id, "Gemini and Groq are both unavailable right now, so research is "
+                          "paused. " + (f"Retrying every {wait // 60 or 1} min." if e.retry_after else
+                                        "Their daily limits are used up; retrying every 15 min."), "progress")
             log.warning("no cloud model free for %s; retrying in %ss", e, wait)
             await asyncio.sleep(wait)
     if prev is not None:
+        _paused[row.get("task_id", row["id"])] -= 1
         _set(conn, conv_id, table, row, status=prev)
     return out
 
@@ -100,6 +108,19 @@ async def run_task(conn, conv_id: int, task_id: int) -> str:
     logs.task.set(task_id)
     t = _row(conn, "tasks", task_id)
     log.info("task start: %r", t["objective"])
+    told: set[tuple[str, str]] = set()
+
+    def switched(failed: list[str], used: str) -> None:  # once per task per provider pair
+        names = {"gemini": "Gemini", "groq": "Groq"}
+        old = names.get(config.PROVIDER[failed[0]], failed[0])
+        new = names.get(config.PROVIDER[used], used)
+        if old != new and (old, new) not in told:
+            told.add((old, new))
+            log.warning("%s failing, switched to %s (%s)", old, new, used)
+            _post(conn, conv_id, task_id, f"{old} models are facing issues, so I switched to {new} ({used}).",
+                  "progress")
+
+    on_fallback.set(switched)
     try:
         _set(conn, conv_id, "tasks", t, status="running")
         prompt = _ask(PLAN_PROMPT.format(n=config.MAX_SUBTASKS), t["objective"])
@@ -151,6 +172,7 @@ async def run_task(conn, conv_id: int, task_id: int) -> str:
         return ""
     finally:
         _task_docs.pop(task_id, None)
+        _paused.pop(task_id, None)
 
 
 def _report_input(conn, t: dict) -> str:
@@ -190,7 +212,13 @@ async def _read_doc(conn, st: dict, url: str) -> list[Evidence]:
     try:
         r = await _retry(conn, st["conv_id"], "subtasks", st,
                          lambda: read_pdf(url, st["objective"], st["id"], st["loop"], conn, skip=done))
-    except openai.APIError:  # cloud failures still fail the task; QuotaExhausted is retried above
+    except openai.APIStatusError as e:
+        if e.status_code != 413:  # cloud failures still fail the task; QuotaExhausted is retried above
+            raise
+        log.warning("skipping PDF %s: pages too large for every model", url)
+        st["pdf_done"].add(url)
+        return []
+    except openai.APIError:
         raise
     except Exception as e:  # dead link, size cap, timeout, corrupt PDF: skip this hit
         log.warning("skipping PDF %s: %r", url, e)

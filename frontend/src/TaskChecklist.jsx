@@ -3,7 +3,7 @@ import { useState } from 'react'
 const DOT = { running: 'run', checking_in: 'run', restarted: 'run', failed: 'q', done: 'done', queued: 'q', paused_quota: 'warn', partial: 'warn', interrupted: 'warn' }
 
 const NOTE = {
-  paused_quota: 'Paused — quota exhausted, resumes after reset',
+  paused_quota: 'Paused — Gemini and Groq unavailable, retrying',
   interrupted: 'Interrupted — server restarted. Ask again to rerun.',
   failed: 'Stopped',
 }
@@ -14,7 +14,7 @@ function status(s) {
     case 'running': return `round ${n} · check-in at ${n === 0 ? 5 : Math.ceil(n / 5) * 5}`
     case 'checking_in': return 'checking in'
     case 'done': return `done · ${n} rounds`
-    case 'paused_quota': return 'paused — quota exhausted, resumes after reset'
+    case 'paused_quota': return 'paused — models unavailable, retrying'
     default: return s.status
   }
 }

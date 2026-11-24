@@ -16,7 +16,7 @@ ROLES: dict[str, list[str]] = {
     "plan": _PLAN,
     "report": _PLAN,
     "checkin": ["qwen/qwen3.8-27b", "gemini-3.1-flash-lite"],
-    "pdf": ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"],
+    "pdf": ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "qwen/qwen3.8-27b"],
 }
 DAILY_LIMITS: dict[str, int] = {
     "gemini-3.5-flash-lite": 500,

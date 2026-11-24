@@ -153,6 +153,23 @@ def test_quota_pause_resumes(monkeypatch):
     statuses = [e["subtask"]["status"] for e in env.events if e["type"] == "subtask"]
     assert "paused_quota" in statuses
     assert st["status"] == "done"
+    notes = [e["message"]["content"] for e in env.events if e["type"] == "message"]
+    assert sum("research is paused" in n for n in notes) == 1
+
+
+def test_switch_to_groq_is_told_once_per_task(monkeypatch):
+    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}])
+    orig = env.cloud
+
+    async def via_groq(role, messages, conn):
+        if note := task.on_fallback.get():
+            note(["gemini-3.5-flash-lite"], "qwen/qwen3.8-27b")
+        return await orig(role, messages, conn)
+
+    monkeypatch.setattr(task, "cloud", via_groq)
+    asyncio.run(task.run_task(env.conn, env.conv, env.task_id))
+    notes = [e["message"]["content"] for e in env.events if e["type"] == "message"]
+    assert notes.count("Gemini models are facing issues, so I switched to Groq (qwen/qwen3.8-27b).") == 1
 
 
 def test_zero_hits_round_continues(monkeypatch):

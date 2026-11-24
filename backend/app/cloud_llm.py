@@ -1,3 +1,4 @@
+import contextvars
 import os
 import logging
 import sqlite3
@@ -21,6 +22,9 @@ log = logging.getLogger(__name__)
 COOLDOWN_SECONDS = 60
 _cool: dict[str, float] = {}  # model -> time.monotonic() when its 429 cooldown ends
 _clients: dict[str, Any] = {}  # provider -> client, one per process
+# set by the task engine: called (failed models, model used) when a call succeeds on a fallback after errors
+on_fallback: contextvars.ContextVar[Callable[[list[str], str], None] | None] = \
+    contextvars.ContextVar("on_fallback", default=None)
 
 
 class QuotaExhausted(Exception):
@@ -74,6 +78,7 @@ def _set_used(conn: sqlite3.Connection, day: str, model: str, used: int) -> None
 async def cloud(role: str, messages: list[dict], conn: sqlite3.Connection) -> str:
     day = _day()
     cooling = False
+    failed: list[str] = []  # models that errored on this call
     for model in config.ROLES[role]:
         used = _used(conn, day, model)
         limit = config.DAILY_LIMITS[model]
@@ -98,12 +103,22 @@ async def cloud(role: str, messages: list[dict], conn: sqlite3.Connection) -> st
             cooling = True
             log.warning("cloud %s: %s temporarily unavailable after %.1fs (%s), cooling down %ds", role, model,
                         time.monotonic() - t0, getattr(e, "status_code", None) or type(e).__name__, COOLDOWN_SECONDS)
+            failed.append(model)
+            continue
+        except openai.APIStatusError as e:
+            if e.status_code != 413 or model == config.ROLES[role][-1]:
+                log.error("cloud %s: %s failed after %.1fs: %r", role, model, time.monotonic() - t0, e)
+                raise
+            log.warning("cloud %s: prompt too large for %s (413), trying the next model", role, model)
+            failed.append(model)
             continue
         except Exception as e:
             log.error("cloud %s: %s failed after %.1fs: %r", role, model, time.monotonic() - t0, e)
             raise
         out = resp.choices[0].message.content or ""
         log.info("cloud %s <- %s: %d chars in %.1fs", role, model, len(out), time.monotonic() - t0)
+        if failed and (note := on_fallback.get()):
+            note(failed, model)
         log.debug("cloud %s reply: %s", role, clip(out, 400))
         return out
     log.warning("cloud %s: no model available (%s)", role, "cooling down" if cooling else "daily quota exhausted")
