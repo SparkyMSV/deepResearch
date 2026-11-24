@@ -48,7 +48,7 @@ def opening(ctx, sub) -> list[dict]:
         "pdf_page on the best pages. Use search and open_result when no document has the value.\n"
         "- After reading a page, call record_value for every field value on it, quoting the page's own words "
         "exactly (copy them, numbers as written). For a table, quote the row label and the value joined by "
-        '" ... ", e.g. "Total revenue ... 2,110,127". Only values for the field\'s entity and period.\n"
+        '" ... ", e.g. "Total revenue ... 2,110,127". Only values for the field\'s entity and period.\n'
         "- Call mark_not_public only after reading documents and searching.\n"
         "- When every field is recorded or not public, or nothing more can be found, call done.\n"
         "Fields:\n" + "\n".join(_field_lines(ctx.conn, sub)) + "\nDocuments:\n" + "\n".join(doc_lines))
