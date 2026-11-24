@@ -1,23 +1,31 @@
 import asyncio
-import json
-import time
 
 import fitz
 import pytest
+import requests
 
 from app import pdf
-from app.db import connect
 
 URL = "http://x.org/reports/annual.pdf"
+TOC = ["Directors report ..... 4", "Financial statements ..... 7", "Notes to accounts ..... 9",
+       "Risk management ..... 10", "Corporate governance ..... 11"]
+
+
+def make_pdf(pages):
+    d = fitz.open()
+    for text in pages:
+        page = d.new_page()
+        for i, line in enumerate(text.split("\n")):
+            page.insert_text((72, 72 + 14 * i), line)
+    return d.tobytes()
 
 
 @pytest.fixture(scope="module")
-def pdf_bytes():
-    d = fitz.open()
-    for i in range(1, 13):
-        text = "Contents ... Results p.9" if i == 1 else "Revenue 120" if i == 9 else f"filler text page {i}"
-        d.new_page().insert_text((72, 72), text)
-    return d.tobytes()
+def report():
+    pages = [f"filler page {i}" for i in range(1, 13)]
+    pages[1] = "Contents\n" + "\n".join(TOC)
+    pages[5] = "Directors report\nAsset quality improved."  # printed page 4 is PDF page 6
+    return make_pdf(pages)
 
 
 class Resp:
@@ -38,106 +46,56 @@ class Resp:
             yield self._b[i:i + n]
 
 
-def run(monkeypatch, pdf_bytes, triage, facts=None):
-    monkeypatch.setattr(pdf.requests, "get", lambda *a, **k: Resp(pdf_bytes))
-    prompts = []
-
-    async def fake_cloud(role, messages, conn):
-        assert role == "pdf"
-        prompts.append(messages[-1]["content"])
-        return triage if len(prompts) == 1 else (facts or '{"facts": []}')
-
-    monkeypatch.setattr(pdf, "cloud", fake_cloud)
-    r = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
-    assert r.about.endswith("(12 pages)")
-    return r.evidence, prompts
+@pytest.fixture
+def store(monkeypatch, report):
+    gets = []
+    monkeypatch.setattr(pdf.requests, "get", lambda url, **k: gets.append(url) or Resp(report))
+    s = pdf.PdfStore()
+    s.gets = gets
+    yield s
+    s.close()
 
 
-def test_reads_only_triaged_pages(monkeypatch, pdf_bytes):
-    _, prompts = run(monkeypatch, pdf_bytes, '{"pages": [[9, 9]]}')
-    assert "[page 9]" in prompts[1] and "[page 3]" not in prompts[1]
+def test_downloads_once_and_caches_pages(store, monkeypatch):
+    calls = []
+    real = pdf._ocr
+    monkeypatch.setattr(pdf, "_ocr", lambda path, n: calls.append(n) or real(path, n))
+
+    async def go():
+        assert await store.pages(URL) == 12
+        a = await store.text(URL, 6)
+        assert a == await store.text(URL, 6) and "Asset quality" in a
+
+    asyncio.run(go())
+    assert store.gets == [URL] and calls.count(6) == 1
 
 
-def test_page_cap(monkeypatch, pdf_bytes):
-    _, prompts = run(monkeypatch, pdf_bytes, '{"pages": [[1, 500]]}')
-    assert prompts[1].count("[page ") == 12  # clamped to doc
-    monkeypatch.setattr(pdf, "MAX_PAGES", 5)
-    _, prompts = run(monkeypatch, pdf_bytes, '{"pages": [[1, 500]]}')
-    assert prompts[1].count("[page ") == 5
+def test_contents_entries(store):
+    c = asyncio.run(store.contents(URL))
+    assert c.raw == "" and c.entries[0] == ("Directors report", 4) and len(c.entries) == 5
 
 
-def test_facts_to_evidence(monkeypatch, pdf_bytes):
-    facts = json.dumps({"facts": [{"fact": "Revenue 120", "page": 9, "period": "FY24"}]})
-    out, _ = run(monkeypatch, pdf_bytes, '{"pages": [[9, 9]]}', facts)
-    assert (out[0].page, out[0].url, out[0].passage, out[0].published) == (9, URL, "Revenue 120", "FY24")
-    assert out[0].title == "annual.pdf"
+def test_contents_falls_back_to_raw_lines(monkeypatch):
+    monkeypatch.setattr(pdf.requests, "get", lambda url, **k: Resp(make_pdf(["Cover\nAcme Ltd", "Intro text"])))
+    s = pdf.PdfStore()
+    c = asyncio.run(s.contents(URL))
+    s.close()
+    assert c.entries == [] and "Acme Ltd" in c.raw
 
 
-def test_bad_triage_json_returns_empty(monkeypatch, pdf_bytes):
-    out, prompts = run(monkeypatch, pdf_bytes, "not json")
-    assert out == [] and len(prompts) == 1
+def test_locate_finds_offset_page(store):
+    assert asyncio.run(store.locate(URL, "Directors report", 4)) == (6, True)
+    assert asyncio.run(store.locate(URL, "Nothing like this", 4)) == (4, False)
 
 
-def test_event_loop_stays_responsive(monkeypatch, pdf_bytes):
-    monkeypatch.setattr(pdf.requests, "get", lambda *a, **k: Resp(pdf_bytes))
-    monkeypatch.setattr(pdf, "_read_pages", lambda p, w: (time.sleep(0.3) or {1: "x"}, 12))
+def test_download_failure_raises(monkeypatch):
+    def boom(url, **k):
+        raise requests.HTTPError("403")
 
-    async def fake_cloud(role, messages, conn):
-        return '{"pages": []}'
-
-    monkeypatch.setattr(pdf, "cloud", fake_cloud)
-    ticks = 0
-
-    async def main():
-        nonlocal ticks
-        task = asyncio.create_task(pdf.read_pdf(URL, "o", 1, 0, connect(":memory:")))
-        while not task.done():
-            await asyncio.sleep(0.05)
-            ticks += 1
-        await task
-
-    asyncio.run(main())
-    assert ticks >= 3
+    monkeypatch.setattr(pdf.requests, "get", boom)
+    with pytest.raises(requests.HTTPError):
+        asyncio.run(pdf.PdfStore().pages(URL))
 
 
-def test_triage_says_what_the_document_is(monkeypatch, pdf_bytes):
-    monkeypatch.setattr(pdf.requests, "get", lambda *a, **k: Resp(pdf_bytes))
-
-    async def fake_cloud(role, messages, conn):
-        return '{"about": "Acme Ltd annual report FY2024", "pages": []}'
-
-    monkeypatch.setattr(pdf, "cloud", fake_cloud)
-    r = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
-    assert r == ([], "Acme Ltd annual report FY2024 (12 pages)", [])
-
-
-def test_deeper_read_skips_pages_already_read(monkeypatch, pdf_bytes):
-    monkeypatch.setattr(pdf.requests, "get", lambda *a, **k: Resp(pdf_bytes))
-    prompts = []
-
-    async def fake_cloud(role, messages, conn):
-        prompts.append(messages[-1]["content"])
-        return '{"pages": [[8, 10]]}' if len(prompts) == 1 else '{"facts": []}'
-
-    monkeypatch.setattr(pdf, "cloud", fake_cloud)
-    r = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:"), skip=[9]))
-    assert "Pages [9] were already read" in prompts[0]
-    assert r.pages == [8, 10] and "[page 9]" not in prompts[1]
-
-
-def test_note_lists_contents_and_download_looks_like_a_browser(monkeypatch, pdf_bytes):
-    sent = {}
-
-    def get(url, **k):
-        sent.update(k.get("headers") or {})
-        return Resp(pdf_bytes)
-
-    monkeypatch.setattr(pdf.requests, "get", get)
-
-    async def fake_cloud(role, messages, conn):
-        return '{"about": "Acme Ltd annual report FY2024", "covers": "financial statements, asset quality", "pages": []}'
-
-    monkeypatch.setattr(pdf, "cloud", fake_cloud)
-    r = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
-    assert r.about == "Acme Ltd annual report FY2024; covers financial statements, asset quality (12 pages)"
-    assert "Mozilla" in sent["User-Agent"]
+def test_norm_straightens_quotes():
+    assert pdf.norm("Company’s  GNPA\nwas") == "Company's GNPA was"

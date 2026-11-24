@@ -1,13 +1,13 @@
-"""PDF reader: the swap point for the future OCR/retrieval redesign.
+"""PDF store for one research task: download once, OCR pages to text on demand (cached), contents and page offset.
 
-Only `read_pdf` is public; the task engine calls it for every PDF it reads.
+Only text ever leaves this module; no PDF goes to a model.
 """
 import asyncio
+import re
 import logging
 import os
 import threading
 import tempfile
-from datetime import datetime, timezone
 from typing import NamedTuple
 
 import indra_ocr
@@ -15,25 +15,15 @@ import pypdfium2 as pdfium
 import requests
 
 from app import config
-from app.cloud_llm import cloud
-from app.db import Evidence
-from app.local_llm import parse_json
-from app.logs import clip
 from app.search import _HEADERS
 
 log = logging.getLogger(__name__)
 
 MAX_BYTES = 50_000_000
-TRIAGE_PAGES = 8
-MAX_PAGES = 30
+HEAD_PAGES = 8  # contents are looked for in these
+MAX_ENTRIES, RAW_LINES, LOCATE_SPAN = 60, 40, 15
 _conv = None
 _lock = threading.Lock()  # converter/pdfium are not assumed thread-safe
-
-
-class PdfRead(NamedTuple):
-    evidence: list[Evidence]
-    about: str  # one line on what the document is, for other sub-tasks
-    pages: list[int]  # pages read this time; [] means nothing (more) worth reading
 
 
 def _converter():
@@ -55,74 +45,78 @@ def _download(url: str, path: str) -> None:
                 f.write(chunk)
 
 
-def _read_pages(path: str, wanted: list[int] | None) -> tuple[dict[int, str], int]:
-    """Markdown by 1-based page (first TRIAGE_PAGES if wanted is None), and page count."""
+def _ocr(path: str, n: int) -> tuple[str, int]:
+    """Text of 1-based page n (indra-ocr markdown) and the page count."""
     with _lock:
         doc = pdfium.PdfDocument(path)
         try:
-            n = len(doc)
-            nums = range(1, min(n, TRIAGE_PAGES) + 1) if wanted is None else wanted
-            conv = _converter()
-            return {i: conv.pdf_page(path, doc, i - 1).markdown for i in nums}, n
+            return (_converter().pdf_page(path, doc, n - 1).markdown or "") if n else "", len(doc)
         finally:
             doc.close()
 
 
-def _page_list(ranges, n: int) -> list[int]:
-    pages = []
-    for r in ranges if isinstance(ranges, list) else []:
-        if isinstance(r, list) and len(r) == 2 and all(isinstance(x, int) for x in r):
-            pages += [p for p in range(max(r[0], 1), min(r[1], n) + 1) if p not in pages]
-    return pages[:MAX_PAGES]
+_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
+_ENTRY = re.compile(r"^(.{3,80}?)[\s.\u00b7\u2026_-]{2,}(\d{1,4})\s*$")
 
 
-def _tagged(pages: dict[int, str]) -> str:
-    return "\n\n".join(f"[page {i}]\n{t}" for i, t in pages.items())
+def norm(s: str) -> str:
+    """Whitespace collapsed and curly quotes straightened, for verbatim checks."""
+    return " ".join((s or "").translate(_QUOTES).split())
 
 
-async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn, skip: list[int] = ()) -> PdfRead:
-    """Facts for the objective from the pages triage picks; skip: pages already read (a deeper read)."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp.close()
-    try:
-        log.info("pdf %s: downloading", url)
-        await asyncio.to_thread(_download, url, tmp.name)
-        head, n = await asyncio.to_thread(_read_pages, tmp.name, None)
-        log.info("pdf %s: %.1f MB, %d pages; sending first %d to triage", url,
-                 os.path.getsize(tmp.name) / 1e6, n, len(head))
-        triage = await cloud("pdf", [{"role": "user", "content": (
-            f"Objective: {objective}\nThe PDF has {n} pages. Here are the first {len(head)}:\n\n{_tagged(head)}\n\n"
-            + (f"Pages {list(skip)} were already read; pick other pages, or none if nothing else is relevant. "
-               if skip else "")
-            + 'Using the contents, pick the pages most likely to answer the objective. '
-            'Printed page numbers in the contents may be offset from the [page N] tags; use the tags. '
-            'Also say what the document is in at most 12 words (issuer, type, period), and list its main '
-            'contents in at most 12 words. '
-            'Reply as JSON only: {"about": "...", "covers": "...", "pages": [[start, end], ...]} '
-            '(1-based, inclusive).')}], conn)
-        t = parse_json(triage) or {}
-        covers = f"; covers {clip(t['covers'], 100)}" if isinstance(t.get("covers"), str) and t["covers"] else ""
-        about = f"{clip(t.get('about') or url.split('?')[0].rsplit('/', 1)[-1], 100)}{covers} ({n} pages)"
-        log.info("pdf %s: about %r", url, about)
-        pages = [p for p in _page_list(t.get("pages"), n) if p not in skip]
-        if not pages:
-            log.info("pdf %s: triage picked no %spages (reply: %s)", url, "new " if skip else "", clip(triage))
-            return PdfRead([], about, [])
-        log.info("pdf %s: triage picked pages %s; reading them", url, pages)
-        body, _ = await asyncio.to_thread(_read_pages, tmp.name, pages)
-        raw = await cloud("pdf", [{"role": "user", "content": (
-            f"Objective: {objective}\n\n{_tagged(body)}\n\n"
-            "Extract facts relevant to the objective, quoting figures exactly. Reply as JSON only: "
-            '{"facts": [{"fact": "...", "page": N, "period": "reporting period or null"}]}')}], conn)
-    finally:
-        os.unlink(tmp.name)
-    now = datetime.now(timezone.utc).date().isoformat()
-    title = url.split("?")[0].rsplit("/", 1)[-1] or url
-    facts = (parse_json(raw) or {}).get("facts")
-    log.info("pdf %s: %d facts extracted", url, len(facts) if isinstance(facts, list) else 0)
-    for f in facts if isinstance(facts, list) else []:
-        if isinstance(f, dict):
-            log.debug("  p%s %s", f.get("page"), clip(f.get("fact"), 200))
-    return PdfRead([Evidence(subtask_id, loop, url, title, f["fact"], f.get("period") or None, now, f.get("page"))
-                    for f in facts if isinstance(f, dict) and f.get("fact")] if isinstance(facts, list) else [],
-                   about, pages)
+class Contents(NamedTuple):
+    entries: list[tuple[str, int]]  # (title, printed page)
+    raw: str  # first lines of the opening pages, when no contents page was found ("" otherwise)
+
+
+class PdfStore:
+    def __init__(self):
+        self._files: dict[str, str] = {}
+        self._count: dict[str, int] = {}
+        self._text: dict[tuple[str, int], str] = {}
+
+    async def pages(self, url: str) -> int:
+        if url not in self._files:
+            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+            tmp.close()
+            try:
+                log.info("pdf %s: downloading", url)
+                await asyncio.to_thread(_download, url, tmp.name)
+                _, n = await asyncio.to_thread(_ocr, tmp.name, 0)
+            except BaseException:
+                os.unlink(tmp.name)
+                raise
+            self._files[url], self._count[url] = tmp.name, n
+            log.info("pdf %s: %.1f MB, %d pages", url, os.path.getsize(tmp.name) / 1e6, n)
+        return self._count[url]
+
+    async def text(self, url: str, n: int) -> str:
+        if (url, n) not in self._text:
+            await self.pages(url)
+            self._text[(url, n)], _ = await asyncio.to_thread(_ocr, self._files[url], n)
+        return self._text[(url, n)]
+
+    async def contents(self, url: str) -> Contents:
+        head = [await self.text(url, i) for i in range(1, min(await self.pages(url), HEAD_PAGES) + 1)]
+        lines = [ln.strip(" #*|") for t in head for ln in t.splitlines() if ln.strip(" #*|")]
+        entries = [(m.group(1).strip(" .|*"), int(m.group(2))) for ln in lines if (m := _ENTRY.match(ln))]
+        if len(entries) >= 5:
+            return Contents(entries[:MAX_ENTRIES], "")
+        return Contents([], "\n".join(lines[:RAW_LINES]))
+
+    async def locate(self, url: str, title: str, printed: int) -> tuple[int, bool]:
+        """PDF page where a contents entry starts: printed page, then +1, -1, +2, ... up to LOCATE_SPAN."""
+        n, want = await self.pages(url), norm(title).lower()
+        for d in range(LOCATE_SPAN + 1):
+            for p in ((printed,) if d == 0 else (printed + d, printed - d)):
+                if 1 <= p <= n and want in norm(await self.text(url, p)).lower():
+                    return p, True
+        return min(max(printed, 1), n), False
+
+    def close(self) -> None:
+        for path in self._files.values():
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self._files.clear()
