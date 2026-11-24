@@ -45,3 +45,19 @@ def test_cancelled_caller_does_not_kill_worker():
         return await asyncio.wait_for(qwen([{"role": "user", "content": "next"}]), 2)
 
     assert asyncio.run(run()) == "done"
+
+
+def test_streams_tokens_to_on_token():
+    def fake(messages, max_tokens, on_token=None):
+        for t in ("Hel", "lo", "!"):
+            on_token(t)
+        return "Hello!"
+
+    set_backend(fake)
+    got = []
+
+    async def run():
+        return await qwen([{"role": "user", "content": "hi"}], priority=CHAT, on_token=got.append)
+
+    assert asyncio.run(run()) == "Hello!"
+    assert got == ["Hel", "lo", "!"]

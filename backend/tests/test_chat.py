@@ -18,11 +18,14 @@ class Env:
         if run_task:
             monkeypatch.setattr(chat, "run_task", run_task)
 
-    async def qwen(self, messages, priority=None, max_tokens=800):
+    async def qwen(self, messages, priority=None, max_tokens=800, on_token=None):
         assert priority == CHAT
         self.calls.append(messages)
         if messages[0]["content"] == chat.ROUTER_PROMPT:
             return self.router
+        if on_token:
+            for t in ("qwen ", "reply"):
+                on_token(t)
         return "qwen reply"
 
     async def search(self, query, objective, priority=None):
@@ -125,3 +128,21 @@ def test_empty_search_skips_qwen(monkeypatch):
     assert env.calls == []
     m = env.msgs()
     assert (m[-1]["kind"], m[-1]["content"]) == ("text", "No usable results found for that search.")
+
+
+def test_answer_streams_with_status(monkeypatch):
+    env = Env(monkeypatch)
+    asyncio.run(chat.handle_message(env.conn, env.conv, "hello"))
+    kinds = [(e["type"], e.get("text")) for e in env.events if e["type"] in ("status", "delta")]
+    assert kinds[0] == ("status", "thinking")
+    assert ("status", "writing") in kinds
+    assert [t for k, t in kinds if k == "delta"] == ["qwen ", "reply"]
+    assert kinds[-1] == ("status", None)
+    assert env.msgs()[-1]["content"] == "qwen reply"
+
+
+def test_search_publishes_searching_status(monkeypatch):
+    env = Env(monkeypatch)
+    asyncio.run(chat.handle_message(env.conn, env.conv, "search: x"))
+    texts = [e["text"] for e in env.events if e["type"] == "status"]
+    assert texts[:2] == ["thinking", "searching"] and texts[-1] is None

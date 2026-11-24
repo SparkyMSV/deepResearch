@@ -3,6 +3,7 @@ import { getConversation, sendMessage, subscribe } from './api.js'
 import Message from './Message.jsx'
 import TaskChecklist from './TaskChecklist.jsx'
 import ReportBlock from './ReportBlock.jsx'
+import Busy from './Busy.jsx'
 
 const same = (a, b) => a.id === b.id
 const upsert = (list, item, merge = (x, y) => ({ ...x, ...y })) =>
@@ -14,7 +15,13 @@ const mergeTask = (a, b) => ({ ...a, ...b, subtasks: (b.subtasks || []).reduce((
 const upsertTask = (tasks, t) => upsert(tasks, { subtasks: [], ...t }, mergeTask)
 
 function applyEvent(st, ev) {
-  if (ev.type === 'message') return { ...st, messages: upsert(st.messages, ev.message) }
+  if (ev.type === 'message') {
+    // the final assistant message replaces the streamed draft
+    const draft = ev.message.role === 'assistant' ? '' : st.draft
+    return { ...st, draft, messages: upsert(st.messages, ev.message) }
+  }
+  if (ev.type === 'status') return { ...st, status: ev.text, draft: ev.text ? st.draft : '' }
+  if (ev.type === 'delta') return { ...st, draft: st.draft + ev.text }
   if (ev.type === 'task') return { ...st, tasks: upsertTask(st.tasks, ev.task) }
   if (ev.type === 'subtask') {
     const sub = { rounds: st.pending[ev.subtask.id] || [], ...ev.subtask }
@@ -30,7 +37,7 @@ function applyEvent(st, ev) {
   return st
 }
 
-const EMPTY = { messages: [], tasks: [], pending: {} }
+const EMPTY = { messages: [], tasks: [], pending: {}, status: null, draft: '' }
 
 export default function Chat({ conversationId, onSent }) {
   const [st, setSt] = useState(EMPTY)
@@ -59,7 +66,7 @@ export default function Chat({ conversationId, onSent }) {
     return () => { live = false; unsub() }
   }, [conversationId])
 
-  useEffect(() => { end.current?.scrollIntoView?.({ block: 'end' }) }, [st.messages.length])
+  useEffect(() => { end.current?.scrollIntoView?.({ block: 'end' }) }, [st.messages.length, st.draft, st.status])
 
   if (!conversationId) return <div className="empty muted">Select or start a research</div>
 
@@ -71,6 +78,8 @@ export default function Chat({ conversationId, onSent }) {
     try {
       await sendMessage(conversationId, t)
       setText('')
+      // show life immediately; the server's status events take over from here
+      setSt((s) => ({ ...s, status: s.status || 'thinking' }))
       onSent?.()
     } catch (e) {
       console.error('sendMessage failed', e)
@@ -100,6 +109,9 @@ export default function Chat({ conversationId, onSent }) {
           </div>
         ))}
         {st.tasks.filter((t) => !placed.has(t.id)).map(check)}
+        {st.draft
+          ? <div className="msg-a md streaming">{st.draft}</div>
+          : st.status && <Busy phase={st.status} />}
         <div ref={end} />
       </div>
       {err && <div className="send-err muted" role="alert">{err}</div>}

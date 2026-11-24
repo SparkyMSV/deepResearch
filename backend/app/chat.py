@@ -4,6 +4,7 @@ import json
 import logging
 import re
 
+from app import events
 from app.db import insert, update
 from app.local_llm import CHAT, parse_json, qwen
 from app.search import search
@@ -54,9 +55,15 @@ def _report(conn, conv_id: int) -> str:
     return f"Latest research report (truncated):\n{r['content'][:6000]}" if r else ""
 
 
+def _status(conv_id: int, phase: str | None) -> None:
+    events.publish(conv_id, {"type": "status", "text": phase})
+
+
 async def _reply(conn, conv_id: int, system: str, extra: str = "") -> str:
     msgs = [{"role": "system", "content": system + ("\n\n" + extra if extra else "")}, *_history(conn, conv_id)]
-    return (await qwen(msgs, priority=CHAT)).strip()
+    _status(conv_id, "writing")
+    on_token = lambda t: events.publish(conv_id, {"type": "delta", "text": t})
+    return (await qwen(msgs, priority=CHAT, on_token=on_token)).strip()
 
 
 async def _run_and_summarize(conn, conv_id: int, task_id: int) -> None:
@@ -70,9 +77,17 @@ async def _run_and_summarize(conn, conv_id: int, task_id: int) -> None:
 
 
 async def handle_message(conn, conv_id: int, text: str) -> None:
+    try:
+        await _handle(conn, conv_id, text)
+    finally:  # always clear the busy indicator, even on errors
+        _status(conv_id, None)
+
+
+async def _handle(conn, conv_id: int, text: str) -> None:
     if conn.execute("select count(*) from messages where conversation_id=?", (conv_id,)).fetchone()[0] == 0:
         update(conn, "conversations", conv_id, title=text[:60])
     _post(conn, conv_id, None, text, "text", role="user")
+    _status(conv_id, "thinking")
     mode, _, rest = text.partition(":")
     mode = mode.strip().lower()
     if mode in ("search", "task") and rest.strip():
@@ -85,6 +100,7 @@ async def handle_message(conn, conv_id: int, text: str) -> None:
         q = raw.get("query")
         query = q.strip() if isinstance(q, str) and q.strip() else text
     if action == "search":
+        _status(conv_id, "searching")
         results = [{"title": h.title, "url": h.url, "snippet": h.snippet} for h in await search(query, query, CHAT)]
         if not results:  # nothing to summarize: don't let Qwen invent sources
             _post(conn, conv_id, None, NO_RESULTS, "text")

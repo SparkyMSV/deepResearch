@@ -18,32 +18,42 @@ _model = None  # (model, tokenizer), loaded once per process
 _pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
 
 
-def _mlx_backend(messages: list[dict], max_tokens: int) -> str:
+def _mlx_backend(messages: list[dict], max_tokens: int, on_token: Callable[[str], None] | None = None) -> str:
     global _model
-    from mlx_lm import generate, load
+    from mlx_lm import generate, load, stream_generate
 
     if _model is None:
         _model = load(config.LOCAL_MODEL)
     m, t = _model
     prompt = t.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
-    return generate(m, t, prompt=prompt, max_tokens=max_tokens)
+    if on_token is None:
+        return generate(m, t, prompt=prompt, max_tokens=max_tokens)
+    out = []
+    for r in stream_generate(m, t, prompt=prompt, max_tokens=max_tokens):
+        out.append(r.text)
+        on_token(r.text)
+    return "".join(out)
 
 
-_backend: Callable[[list[dict], int], str] = _mlx_backend
+_backend: Callable[..., str] = _mlx_backend
 
 
-def set_backend(fn: Callable[[list[dict], int], str]) -> None:
+def set_backend(fn: Callable[..., str]) -> None:
     global _backend
     _backend = fn
 
 
 async def _worker(q: asyncio.PriorityQueue) -> None:
     while True:
-        _, _, messages, max_tokens, fut = await q.get()
+        _, _, messages, max_tokens, on_token, fut = await q.get()
         if fut.done():
             continue
+        loop = asyncio.get_running_loop()
+        # tokens arrive on the MLX thread; hop back to the loop before touching asyncio state
+        args = (messages, max_tokens) if on_token is None else \
+            (messages, max_tokens, lambda t: loop.call_soon_threadsafe(on_token, t))
         try:
-            result = await asyncio.get_running_loop().run_in_executor(_pool, _backend, messages, max_tokens)
+            result = await loop.run_in_executor(_pool, _backend, *args)
         except Exception as e:  # deliver to the caller, keep the worker alive
             if not fut.done():
                 fut.set_exception(e)
@@ -52,7 +62,8 @@ async def _worker(q: asyncio.PriorityQueue) -> None:
                 fut.set_result(result)
 
 
-async def qwen(messages: list[dict], priority: int = WORK, max_tokens: int = 800) -> str:
+async def qwen(messages: list[dict], priority: int = WORK, max_tokens: int = 800,
+               on_token: Callable[[str], None] | None = None) -> str:
     loop = asyncio.get_running_loop()
     if loop not in _queues:  # queue + worker are per event loop
         q = asyncio.PriorityQueue()
@@ -60,7 +71,7 @@ async def qwen(messages: list[dict], priority: int = WORK, max_tokens: int = 800
         _queues[loop] = (q, loop.create_task(_worker(q)))
     q = _queues[loop][0]
     fut = loop.create_future()
-    await q.put((priority, next(_counter), messages, max_tokens, fut))
+    await q.put((priority, next(_counter), messages, max_tokens, on_token, fut))
     return await fut
 
 
