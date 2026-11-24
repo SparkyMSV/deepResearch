@@ -71,7 +71,8 @@ Output JSON:
 {
   "documents": [
     {"key": "D1", "name": "Navi Finserv Limited annual report FY2025-26", "issuer": "Navi Finserv Limited",
-     "type": "annual report", "period": "FY2025-26", "search": "Navi Finserv annual report 2025-26 pdf"}
+     "type": "annual report", "period": "FY2025-26", "search": "Navi Finserv annual report 2025-26 pdf",
+     "domains": ["navi.com", "navi-tech.in", "bseindia.com", "nseindia.com"]}
   ],
   "subtasks": [
     {"objective": "Asset quality of Navi Finserv",
@@ -90,13 +91,22 @@ Output JSON:
 - Bad JSON: one retry with the parse error appended; then fall back to one sub-task whose single `fact`
   field is the whole objective (mirrors today's fallback).
 - `documents` may be empty (topics with no natural documents).
+- `domains` (optional): sites likely to host the official copy (issuer's site, exchanges, regulators,
+  rating agencies). Used only for ranking candidates, never as a hard filter.
 
 ### 2. Document phase (task-level, before sub-tasks start)
 
 For each planned document, in plan order:
 
 1. Search DDG with its `search` string; if no PDF results, once more with `"<issuer> <type> <period> pdf"`.
-2. For up to 3 PDF candidates (in rerank order), run the PDF triage call (below) with the document's
+2. **Screen candidates for free, before downloading anything**, using what DDG already returns: the URL,
+   the title and the snippet (DDG's short description of the page). A PDF candidate is skipped when none
+   of the issuer's distinctive words (the name minus "Limited", "Ltd", "Pvt", etc.) appears in its URL,
+   title or snippet. That alone drops results like Nazara's or a charity's "Annual Report FY 23-24".
+   Survivors are ordered by a simple score: issuer words found, the wanted period's years found (URL file
+   names like `2023-24.pdf` or `FY26` count), and host in the plan's `domains`; a different year in the
+   URL or title (e.g. `2019-20`) lowers it.
+3. For up to 3 survivors (best score first), run the PDF triage call (below) with the document's
    expected issuer/type/period. Triage returns a verdict; the first `match` is accepted.
 3. Accepted → `documents` row `verified`; candidates that didn't match → `rejected` (kept for the log
    and UI, never offered or read). No match → the planned document is `not_found`.
@@ -139,11 +149,13 @@ queries tried. Each round picks the **first applicable** step:
    near-duplicates (existing 80% word-overlap rule).
 4. **Nothing left** → immediate check-in.
 
-A web-search round: DDG → fetch every result (skipping URLs already read) → Qwen rerank against the open
-fields → Qwen copies verbatim passages (existing) → **Qwen fills fields from passages**: given one
+A web-search round: DDG → **Qwen screens every result on URL + title + snippet** against the open fields
+(one call for all results; a narrow keep/drop judgement on short text, replacing today's rerank-after-
+fetch) → fetch only the kept results (skipping URLs already read) → Qwen copies verbatim passages
+(existing) → **Qwen fills fields from passages**: given one
 passage and the open fields, return `{"field": id, "value", "unit", "period", "quote"}` or nothing; the
-quote must be verbatim in the passage. PDF hits go through verification (section 2) and, if matched,
-are read in the same round.
+quote must be verbatim in the passage. PDF hits get the same free URL/title/snippet screen as in section 2, then
+verification, and, if matched, are read in the same round.
 
 A field filled from the web keeps `source_kind=web`. A later document value for the same field replaces
 a web value (documents outrank web pages); a later web value never replaces a document value; nothing
