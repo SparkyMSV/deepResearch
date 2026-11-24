@@ -23,6 +23,15 @@ class FakeStore:
         entries = self.toc.get(url, [])
         return Contents(entries, "" if len(entries) >= 5 else "\n".join(self.docs[url][0].splitlines()[:40]))
 
+    async def find(self, url, terms):
+        await self.pages(url)
+        out = {}
+        for i, t in enumerate(self.docs[url], 1):
+            for term in terms:
+                if term in " ".join(t.lower().split()):
+                    out.setdefault(term, []).append(i)
+        return out
+
     async def locate(self, url, title, printed):
         n = len(self.docs[url])
         for d in range(16):

@@ -3,6 +3,7 @@ import json
 import logging
 import re
 
+from app.ctx import date_note
 from app.db import insert
 from app.local_llm import WORK, parse_json, qwen
 from app.logs import clip
@@ -41,10 +42,13 @@ async def read_page(ctx, sub, text: str, source: dict, nav: bool) -> tuple[list[
     if not want:
         return [], ("leave" if nav else None)
     listing = "\n".join(f"[{i}] {f['name']} ({f['entity'] or 'any'}, {f['period']})" for i, f in enumerate(want, 1))
+    more = source.get("more") or []
+    nxt_eg = more[0] if more else (source["page"] or 0) + 1
     reply = ('{"found":[{"field":1,"value":"...","unit":"...","period":"...","quote":"exact words from the page"}]'
-             + (',"next":<page number>|"contents"|"leave"}' if nav else "}"))
-    prompt = (f"Today is {ctx.today}. {_label(source)}. Looking for:\n{listing}\nOnly values for that entity and period. "
-              f"Value without its unit; unit separately. Quote the page exactly.\n\n{text[:PAGE_CHARS].strip() or '(no text on this page)'}\n\n"
+             + (f',"next":{nxt_eg}}} (a page number, "contents" or "leave")' if nav else "}"))
+    prompt = (f"{date_note(ctx.today)} {_label(source)}. Looking for:\n{listing}\nOnly values for that entity and period. "
+              + (f"Other pages mentioning these fields: {', '.join(map(str, more))}. " if more else "")
+              + f"Value without its unit; unit separately. Quote the page exactly.\n\n{text[:PAGE_CHARS].strip() or '(no text on this page)'}\n\n"
               f'Reply JSON only: {reply}. If nothing is here: {{"found":[]' + (',"next":"..."}' if nav else "}"))
     d = None
     for attempt in range(2):

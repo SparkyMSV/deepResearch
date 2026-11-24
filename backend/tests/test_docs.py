@@ -170,3 +170,30 @@ def test_find_document_keeps_searching_hosts_until_enough_candidates(monkeypatch
     monkeypatch.setattr(docs, "ddg", lambda qy: c.searched.append(qy) or next((v for k, v in by_query.items() if k in qy), []))
     asyncio.run(docs.find_document(c, plan_doc(c)))
     assert c.doc("D1")["status"] == "verified" and len(c.searched) == 3 and "site:navi.com" in c.searched[2]
+
+
+def test_navigator_shows_keyword_pages_and_a_muddled_reply_opens_the_best_one(monkeypatch):
+    pages = [f"filler {i}" for i in range(1, 31)]
+    pages[13] = "Gross NPA stood at 2.1% this year"
+    pages[21] = "Gross NPA table; gross npa by segment"
+    store = FakeStore({NAVI: pages})  # no contents page
+    q = ScriptedQwen(("Opening lines:", {"error": "this looks like an excerpt"}),
+                     ("Looking for", {"found": [], "next": "leave"}))
+    c, sub = make(monkeypatch, store, q)
+    verified(c, NAVI, 30)
+    assert asyncio.run(docs.visit(c, sub, "D1")) == 1
+    assert "gross npa: 14, 22" in q.prompts[0] and sub["read"]["D1"] in ({14}, {22})
+
+
+def test_search_terms():
+    assert docs.search_terms(["Total Debt", "Gross NPA %"]) == ["total debt", "debt", "gross npa", "gross"]
+
+
+def test_keyword_pages_rank_pages_covering_more_fields_by_name(monkeypatch):
+    pages = ["x"] * 12
+    pages[4] = "credit rating of customers; credit risk; rating"
+    pages[8] = "total debt rose; credit lines"
+    c, _ = make(monkeypatch, FakeStore({NAVI: pages}), ScriptedQwen())
+    verified(c, NAVI, 12)
+    _, ranked = asyncio.run(docs.keyword_pages(c, c.doc("D1"), ["Total Debt", "Credit Rating"], set()))
+    assert ranked[:2] == [9, 5]

@@ -25,3 +25,9 @@ def test_pages_budget_and_docs(monkeypatch):
     assert [d["key"] for d in c.docs()] == ["D1"] and c.doc("D2")["name"] == "X"
     c.pages_used = 2
     assert not c.pages_left()
+
+
+def test_date_note_says_last_financial_year_has_ended():
+    n = C.date_note("2026-11-24")
+    assert "FY2025-26 (April 2025 to March 2026) has ended" in n and "Calendar year 2025 has ended" in n
+    assert "FY2024-25" in C.date_note("2026-02-10")

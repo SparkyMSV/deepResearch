@@ -4,6 +4,7 @@ import logging
 
 from app import config
 from app.cloud_llm import cloud
+from app.ctx import date_note
 from app.db import insert
 from app.local_llm import parse_json
 
@@ -12,7 +13,7 @@ log = logging.getLogger(__name__)
 MAX_FIELDS_PER_SUBTASK, MAX_FIELDS, MAX_DOCUMENTS = 8, 40, 6
 
 PLAN_PROMPT = (
-    "Today is {today}. Plan research for the objective as a checklist a small model will fill. "
+    "{note} Plan research for the objective as a checklist a small model will fill. "
     "Split it into at most {n} sub-tasks. Each sub-task lists fields: specific figures (number + unit) or short "
     "facts, each for a named entity and period. Prefer the latest complete period available as of today. "
     "For figures prefer official documents (annual report, audited results, filings, rating rationales, "
@@ -32,7 +33,7 @@ def _s(v) -> str:
 
 async def make_plan(conn, task_id: int, objective: str, today: str) -> list[int]:
     """Insert planned documents, sub-tasks and fields for a task; return the sub-task ids."""
-    msgs = [{"role": "system", "content": PLAN_PROMPT.format(today=today, n=config.MAX_SUBTASKS)},
+    msgs = [{"role": "system", "content": PLAN_PROMPT.format(note=date_note(today), n=config.MAX_SUBTASKS)},
             {"role": "user", "content": objective}]
     data = None
     for attempt in range(2):

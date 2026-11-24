@@ -45,6 +45,14 @@ class TaskCtx:
         self._set("fields", "field", _FIELD_COLS, row, cols)
 
 
+def date_note(today: str) -> str:
+    """Spell out which periods are already over; both small and large models got this wrong."""
+    y, m = int(today[:4]), int(today[5:7])
+    fy = y if m >= 4 else y - 1  # Indian financial year April-March
+    return (f"Today is {today}. Calendar year {y - 1} has ended, and FY{fy - 1}-{str(fy)[2:]} "
+            f"(April {fy - 1} to March {fy}) has ended; their annual reports are usually out by now.")
+
+
 def new_state(row: dict) -> dict:
     """A sub-task row plus its runtime exploration state (never written to the DB)."""
     return {**row, "urls": set(), "queries": [], "read": {}, "done_docs": set(), "focus": None,

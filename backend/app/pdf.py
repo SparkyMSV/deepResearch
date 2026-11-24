@@ -72,6 +72,22 @@ class Contents(NamedTuple):
     raw: str  # first lines of the opening pages, when no contents page was found ("" otherwise)
 
 
+def _scan(path: str, terms: list[str]) -> dict[str, list[int]]:
+    """1-based pages whose text layer mentions each term (scanned PDFs have no text layer: empty result)."""
+    hits: dict[str, list[int]] = {}
+    with _lock:
+        doc = pdfium.PdfDocument(path)
+        try:
+            for i in range(len(doc)):
+                text = " ".join(doc[i].get_textpage().get_text_range().lower().split())
+                for t in terms:
+                    if t in text:
+                        hits.setdefault(t, []).append(i + 1)
+        finally:
+            doc.close()
+    return hits
+
+
 class PdfStore:
     def __init__(self):
         self._files: dict[str, str] = {}
@@ -115,6 +131,11 @@ class PdfStore:
                 if 1 <= p <= n and want in norm(await self.text(url, p)).lower():
                     return p, True
         return min(max(printed, 1), n), False
+
+    async def find(self, url: str, terms: list[str]) -> dict[str, list[int]]:
+        """Pages mentioning each term, from the PDF's text layer (fast; no OCR)."""
+        await self.pages(url)
+        return await asyncio.to_thread(_scan, self._files[url], [t.lower() for t in terms if t])
 
     def close(self) -> None:
         for path in self._files.values():
