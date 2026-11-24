@@ -3,9 +3,10 @@ import asyncio
 from dataclasses import dataclass, field
 
 from app import config, events
-from app.db import update
+from app.db import insert, update
 
 _DOC_COLS = ("id", "task_id", "key", "name", "issuer", "type", "period", "url", "about", "covers", "pages", "status")
+_SUB_COLS = ("id", "task_id", "objective", "status", "round", "loop", "restarts")
 _FIELD_COLS = ("id", "task_id", "subtask_id", "name", "entity", "period", "kind", "hint", "status", "accepted",
                "value", "unit", "reported_period", "source_url", "source_key", "page", "source_kind", "note")
 
@@ -43,6 +44,15 @@ class TaskCtx:
 
     def set_field(self, row: dict, **cols) -> None:
         self._set("fields", "field", _FIELD_COLS, row, cols)
+
+    def set_subtask(self, row: dict, **cols) -> None:
+        self._set("subtasks", "subtask", _SUB_COLS, row, cols)
+
+    def post(self, content: str, kind: str = "progress") -> None:
+        """A message in the research's conversation (shown in chat)."""
+        msg = {"role": "assistant", "content": content, "kind": kind, "task_id": self.task_id}
+        msg["id"] = insert(self.conn, "messages", conversation_id=self.conv_id, **msg)
+        events.publish(self.conv_id, {"type": "message", "message": msg})
 
 
 def date_note(today: str) -> str:
