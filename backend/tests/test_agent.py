@@ -137,3 +137,63 @@ def test_big_tool_results_trigger_compaction_before_the_next_request(env, monkey
                Reply("", [call("done", note="x")], 900))
     loop(env, s, monkeypatch)
     assert len(s.sent[1]["messages"]) == 2  # compacted: 1000 tokens + ~4000 from two pages > 3000
+
+
+def review(*items):
+    return Reply(json.dumps({"fields": [dict(zip(("field", "action", "hint"), i)) for i in items]}), [], 500)
+
+
+def found_both(c):
+    c.conn.execute("update fields set status='found', value='2.1', quote='q', source_kind='doc'")
+
+
+def test_review_accept_sets_level_1_and_has_thinking_on(env, monkeypatch):
+    c, sub, _, _ = env
+    found_both(c)
+    s = Script(review((1, "accept", ""), (2, "accept", "")))
+    monkeypatch.setattr(agent, "local", s)
+    assert asyncio.run(agent.self_review(c, sub)) == "ok"
+    assert [r[0] for r in c.conn.execute("select accepted from fields order by id")] == [1, 1]
+    assert s.sent[0]["think"] is True and s.sent[0]["tools"] is None
+
+
+def test_review_reject_clears_and_reopens_retry_keeps_value(env, monkeypatch):
+    c, sub, _, _ = env
+    found_both(c)
+    monkeypatch.setattr(agent, "local", Script(review((1, "reject", "wrong year"), (2, "retry", "check notes"))))
+    assert asyncio.run(agent.self_review(c, sub)) == "reopened"
+    rows = c.conn.execute("select status, value, hint from fields order by id").fetchall()
+    assert [tuple(r) for r in rows] == [("open", None, "wrong year"), ("open", "2.1", "check notes")]
+
+
+def test_unparseable_review_is_ok(env, monkeypatch):
+    c, sub, _, _ = env
+    monkeypatch.setattr(agent, "local", Script(Reply("no json here", [], 10)))
+    assert asyncio.run(agent.self_review(c, sub)) == "ok"
+
+
+def run_sub(env, script, monkeypatch):
+    c, sub, _, _ = env
+    monkeypatch.setattr(agent, "local", script)
+    asyncio.run(agent.run_subtask(c, sub["id"]))
+    return c.conn.execute("select * from subtasks where id=?", (sub["id"],)).fetchone()
+
+
+def test_all_accepted_ends_done_with_rounds(env, monkeypatch):
+    s = Script(Reply("", [call("pdf_page", doc="D1", page=3)], 900),
+               Reply("", [call("record_value", 1, field=1, value="2.1", unit="%", quote=QUOTE),
+                          call("record_value", 2, field=2, value="0.9", unit="%", quote=QUOTE)], 1500),
+               review((1, "accept", ""), (2, "accept", "")))
+    st = run_sub(env, s, monkeypatch)
+    c, _, _, sent = env
+    assert st["status"] == "done" and st["round"] == 3
+    assert c.conn.execute("select count(*) from rounds").fetchone()[0] == 3
+    assert any(e["type"] == "round" for e in sent)
+
+
+def test_restart_cap_ends_partial(env, monkeypatch):
+    monkeypatch.setattr(config, "MAX_RESTARTS", 1)
+    done = Reply("", [call("done", note="x")], 100)
+    s = Script(done, review((1, "retry", "look in notes")), done, review((1, "retry", "again")))
+    st = run_sub(env, s, monkeypatch)
+    assert st["status"] == "partial" and st["restarts"] == 1 and st["loop"] == 1
