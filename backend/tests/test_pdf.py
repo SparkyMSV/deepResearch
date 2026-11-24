@@ -48,7 +48,8 @@ def run(monkeypatch, pdf_bytes, triage, facts=None):
         return triage if len(prompts) == 1 else (facts or '{"facts": []}')
 
     monkeypatch.setattr(pdf, "cloud", fake_cloud)
-    out = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
+    out, about = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
+    assert about.endswith("(12 pages)")
     return out, prompts
 
 
@@ -97,3 +98,14 @@ def test_event_loop_stays_responsive(monkeypatch, pdf_bytes):
 
     asyncio.run(main())
     assert ticks >= 3
+
+
+def test_triage_says_what_the_document_is(monkeypatch, pdf_bytes):
+    monkeypatch.setattr(pdf.requests, "get", lambda *a, **k: Resp(pdf_bytes))
+
+    async def fake_cloud(role, messages, conn):
+        return '{"about": "Acme Ltd annual report FY2024", "pages": []}'
+
+    monkeypatch.setattr(pdf, "cloud", fake_cloud)
+    out, about = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
+    assert out == [] and about == "Acme Ltd annual report FY2024 (12 pages)"

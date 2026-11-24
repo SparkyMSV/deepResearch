@@ -46,7 +46,8 @@ class Env:
 
     async def read_pdf(self, url, objective, subtask_id, loop, conn):
         self.pdf_calls.append(url)
-        return [Evidence(subtask_id, loop, url, "doc.pdf", "Revenue 120", "FY24", "2026-11-24", page=9)]
+        return [Evidence(subtask_id, loop, url, "doc.pdf", "Revenue 120", "FY24", "2026-11-24", page=9)], \
+            "Acme annual report FY24 (130 pages)"
 
     async def cloud(self, role, messages, conn):
         self.prompts.setdefault(role, []).append(messages[-1]["content"])
@@ -297,17 +298,26 @@ def test_rewrite_steers_to_needed_pdf_until_read(monkeypatch):
     assert 'from the PDF "Acme annual report 2024"' in asked[0]
 
 
-def test_pdf_found_by_one_subtask_is_read_by_the_next_before_searching(monkeypatch):
+def test_subtask_is_offered_pdfs_found_by_others_and_qwen_decides(monkeypatch):
     report = "http://x/annual-report.pdf"
     env = Env(monkeypatch, checkins=[{"decision": "sufficient"}, {"decision": "sufficient"}],
               hits=lambda q: [Hit("ar", report, "", is_pdf=True)] if q == "find ar" else [])
-    first = env.subtask(objective="GNPA", query="find ar")
-    env.run_subtask(first)
-    searched = len(env.searches)
+    asked = []
+
+    async def pick(messages, priority=None, max_tokens=800):
+        asked.append(messages[-1]["content"])
+        if "[0] Acme annual report FY24 (130 pages)" in asked[-1]:
+            return json.dumps({"read": 0})
+        return json.dumps({"query": f"q{len(env.searches)}"})
+
+    monkeypatch.setattr(task, "qwen", pick)
+    env.run_subtask(env.subtask(objective="GNPA", query="find ar"))
+    assert not any("PDFs found" in a for a in asked)  # its own PDF isn't offered back to it
     second = env.subtask(objective="CAR", query="car query")
     env.run_subtask(second)
     assert env.pdf_calls == [report, report]  # read again, for the second objective
-    assert env.rounds(second)[0]["query"] == "read PDF annual-report.pdf"
-    assert env.searches[searched] == "car query"  # web search only after the PDF round
+    rounds = [r["query"] for r in env.rounds(second)]
+    assert rounds[:2] == ["car query", "read PDF annual-report.pdf"]
+    assert sum("PDFs found" in a for a in asked) == 1  # offered once; read PDFs aren't offered again
     assert env.conn.execute("select count(*) from evidence where subtask_id=? and page=9",
                             (second,)).fetchone()[0] == 1

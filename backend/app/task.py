@@ -21,7 +21,7 @@ MAX_PDFS_PER_SUBTASK = 5  # each PDF read costs cloud "pdf" quota
 CHECKIN_MAX_CHARS, REPORT_MAX_CHARS = 12_000, 60_000
 _FIELDS = {"tasks": ("id", "status", "objective"),
            "subtasks": ("id", "task_id", "objective", "status", "round", "loop", "restarts")}
-_task_docs: dict[int, list[str]] = {}  # task_id -> PDFs that gave facts; every sub-task reads them before searching
+_task_docs: dict[int, dict[str, str]] = {}  # task_id -> {PDF url: one-line note}; offered to every sub-task
 
 PLAN_PROMPT = (
     "Split the research objective into at most {n} independent sub-tasks, each answerable by web search. "
@@ -187,17 +187,17 @@ async def _read_doc(conn, st: dict, url: str) -> list[Evidence]:
         return []
     st["pdf_reads"] += 1
     try:
-        evs = await _retry(conn, st["conv_id"], "subtasks", st,
-                           lambda: read_pdf(url, st["objective"], st["id"], st["loop"], conn))
+        evs, about = await _retry(conn, st["conv_id"], "subtasks", st,
+                                  lambda: read_pdf(url, st["objective"], st["id"], st["loop"], conn))
     except openai.APIError:  # cloud failures still fail the task; QuotaExhausted is retried above
         raise
     except Exception as e:  # dead link, size cap, timeout, corrupt PDF: skip this hit
         log.warning("skipping PDF %s: %r", url, e)
         return []
-    docs = _task_docs.setdefault(st["task_id"], [])
-    if evs and url not in docs:
-        docs.append(url)
-        log.info("PDF %s gave facts; other sub-tasks will read it before searching", url)
+    docs = _task_docs.setdefault(st["task_id"], {})
+    if url not in docs:
+        docs[url] = about
+        log.info("PDF %s shared with the other sub-tasks as %r", url, about)
     return evs
 
 
@@ -239,24 +239,38 @@ async def _checkin(conn, conv_id: int, st: dict, queries: list[str]) -> dict | N
     return d
 
 
-async def _rewrite(conn, st: dict, query: str, queries: list[str]) -> str | None:
-    """Qwen's next query, or None if after 3 tries it only repeats queries already tried."""
-    user = (f"Objective: {st['objective']}\nQueries tried:\n" + "\n".join(queries)
-            + "\nWrite the next web search query to find missing facts. It must differ from every query "
-            'tried. Reply with JSON only: {"query":"..."}')
+async def _next(conn, st: dict, query: str, queries: list[str], urls: set[str]) -> tuple[str, str] | None:
+    """Qwen picks the next step: ("pdf", url) to read a PDF found in this task, ("search", query) for a
+    new web search, or None if after 3 tries it only repeats queries already tried."""
+    docs = [(u, a) for u, a in _task_docs.get(st["task_id"], {}).items() if url_key(u) not in urls] \
+        if st["pdf_reads"] < MAX_PDFS_PER_SUBTASK else []
+    user = f"Objective: {st['objective']}\nQueries tried:\n" + "\n".join(queries)
     if st["needs_document"] and not conn.execute(
             "select 1 from evidence where subtask_id=? and page is not null", (st["id"],)).fetchone():
-        user += (f"\nThe figures should come from the PDF \"{st['needs_document']}\", not yet found. "
-                 "Aim the query at that PDF (add 'pdf' or the publisher's site).")
+        user += (f"\nThe figures should come from the PDF \"{st['needs_document']}\". If it is listed below, "
+                 "read it; else aim the query at it (add 'pdf' or the publisher's site).")
+    if docs:
+        user += ("\nPDFs found in this research, not read by you:\n"
+                 + "\n".join(f"[{i}] {a}" for i, (_, a) in enumerate(docs))
+                 + '\nIf one likely has the missing facts, reply {"read":N}. Otherwise write a new web search '
+                 'query that differs from every query tried: {"query":"..."}. JSON only.')
+    else:
+        user += ("\nWrite the next web search query to find missing facts. It must differ from every query "
+                 'tried. Reply with JSON only: {"query":"..."}')
     for _ in range(3):
-        raw = (parse_json(await qwen([{"role": "user", "content": user}], priority=WORK)) or {}).get("query")
-        new = _fresh(raw, queries)
+        d = parse_json(await qwen([{"role": "user", "content": user}], priority=WORK)) or {}
+        i = d.get("read")
+        i = int(i) if isinstance(i, str) and i.isdigit() else i
+        if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(docs):
+            log.info("next step: read PDF %s (%s)", docs[i][0], docs[i][1])
+            return "pdf", docs[i][0]
+        new = _fresh(d.get("query"), queries)
         if new:
             log.info("query rewrite: %r -> %r", query, new)
-            return new
-        log.info("query rewrite %r is unusable or already tried, asking again", raw)
-        user += f"\n{raw!r} is not allowed: it was already tried or is empty."
-    log.warning("query rewrite: no new query after 3 tries")
+            return "search", new
+        log.info("next step %s is unusable or already tried, asking again", clip(d, 120))
+        user += f"\n{clip(d, 120)} is not allowed: not a listed PDF, or the query was already tried or empty."
+    log.warning("next step: no new query after 3 tries")
     return None
 
 
@@ -269,18 +283,17 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
     queries: list[str] = []
     urls: set[str] = set()  # pages already read by this sub-task; later rounds skip them
     stuck = False  # Qwen ran out of new queries: ask the supervisor now instead of searching
+    doc = None  # a PDF found elsewhere in this task that Qwen chose to read next
     _set(conn, conv_id, "subtasks", st, status="running")
     while True:
-        # a PDF that gave facts in this task (to any sub-task) is read before any more web searching
-        doc = next((u for u in _task_docs.get(st["task_id"], []) if url_key(u) not in urls), None) \
-            if not stuck and st["pdf_reads"] < MAX_PDFS_PER_SUBTASK else None
         if not stuck:
             n = st["round"] + 1
             if doc:
                 urls.add(url_key(doc))
                 label = f"read PDF {doc.split('?')[0].rsplit('/', 1)[-1] or doc}"
-                log.info("round L%d·%d: %s (found earlier in this task) instead of searching", st["loop"], n, doc)
+                log.info("round L%d·%d: reading %s instead of searching", st["loop"], n, doc)
                 evs = await _read_doc(conn, st, doc)
+                doc = None
                 for ev in evs:
                     insert(conn, "evidence", **asdict(ev))
                 log.info("round evidence: +%d facts from the PDF", len(evs))
@@ -339,13 +352,13 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
                     log.info("using the supervisor's query %r", q)
                     query, stuck = q, False
                     continue
-        if doc:
-            continue  # the pending web query hasn't been searched yet
-        new = await _rewrite(conn, st, query, queries)
-        if new is None:
+        step = await _next(conn, st, query, queries, urls)
+        if step is None:
             stuck = True
+        elif step[0] == "pdf":
+            doc = step[1]
         else:
-            query = new
+            query = step[1]
     count = conn.execute("select count(*) from evidence where subtask_id=? and off_target=0",
                          (subtask_id,)).fetchone()[0]
     log.info("sub-task ended %s after %d loop(s): %d usable passages", st["status"], st["loop"] + 1, count)
