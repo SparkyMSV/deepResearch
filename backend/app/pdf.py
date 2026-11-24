@@ -84,6 +84,7 @@ async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn) -
         triage = await cloud("pdf", [{"role": "user", "content": (
             f"Objective: {objective}\nThe PDF has {n} pages. Here are the first {len(head)}:\n\n{_tagged(head)}\n\n"
             'Using the contents, pick the pages most likely to answer the objective. '
+            'Printed page numbers in the contents may be offset from the [page N] tags; use the tags. '
             'Reply as JSON only: {"pages": [[start, end], ...]} (1-based, inclusive).')}], conn)
         pages = _page_list((parse_json(triage) or {}).get("pages"), n)
         if not pages:

@@ -274,3 +274,19 @@ def test_stuck_without_new_supervisor_query_ends_partial(monkeypatch):
     sid = env.subtask()
     st = env.run_subtask(sid)
     assert st["status"] == "partial" and env.searches == ["q0"]
+
+
+def test_rewrite_steers_to_needed_pdf_until_read(monkeypatch):
+    env = Env(monkeypatch, checkins=[{"decision": "sufficient"}], hits=lambda q: [])
+    asked = []
+    fresh = env.qwen
+
+    async def spy(messages, priority=None, max_tokens=800):
+        asked.append(messages[-1]["content"])
+        return await fresh(messages, priority, max_tokens)
+
+    monkeypatch.setattr(task, "qwen", spy)
+    sid = env.subtask(needs_document="Acme annual report 2024")
+    env.run_subtask(sid)
+    assert env.searches[0] == "Acme annual report 2024 pdf"
+    assert 'from the PDF "Acme annual report 2024"' in asked[0]

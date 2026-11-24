@@ -156,3 +156,18 @@ def test_search_skips_seen_urls(monkeypatch):
     seen = {"http://a"}
     asyncio.run(search.search("q", "obj", seen=seen))
     assert fetched == ["http://b"] and seen == {"http://a", "http://b"}
+
+
+def test_rerank_marks_pdfs_and_prefers_them_for_figures(monkeypatch):
+    hs = [Hit("web", "http://w", "s", text="t"), Hit("ar", "http://r.pdf", "s", is_pdf=True)]
+    prompts = []
+
+    async def spy(messages, priority=1, max_tokens=800):
+        prompts.append(messages[-1]["content"])
+        return '{"keep":[1,0]}'
+
+    monkeypatch.setattr(search, "ddg", lambda q: hs)
+    monkeypatch.setattr(search, "fetch", lambda h: h)
+    monkeypatch.setattr(search, "qwen", spy)
+    asyncio.run(search.search("q", "obj"))
+    assert "[1] [PDF] ar" in prompts[0] and "PDF documents" in prompts[0]

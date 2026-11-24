@@ -91,9 +91,12 @@ async def search(query: str, objective: str, priority: int = WORK, seen: set[str
     if len(hits) < 2:
         log.info("rerank skipped: %d candidate(s)", len(hits))
         return hits
-    listing = "\n\n".join(f"[{i}] {h.title}\n{h.url}\n{(h.text or h.snippet)[:800]}" for i, h in enumerate(hits))
+    listing = "\n\n".join(f"[{i}]{' [PDF]' if h.is_pdf else ''} {h.title}\n{h.url}\n{(h.text or h.snippet)[:800]}"
+                          for i, h in enumerate(hits))
     prompt = (f"Objective: {objective}\nQuery: {query}\n\nSources:\n{listing}\n\n"
-              'Pick the sources useful for the objective, best first. Reply JSON only: {"keep":[indices]}')
+              "Pick the sources useful for the objective, best first. If the objective needs figures, rank "
+              "official PDF documents (annual reports, filings) first. "
+              'Reply JSON only: {"keep":[indices]}')
     log.info("rerank: Qwen ranking %d candidates for objective %r", len(hits), clip(objective, 100))
     t0 = time.monotonic()
     raw = await qwen([{"role": "user", "content": prompt}], priority)

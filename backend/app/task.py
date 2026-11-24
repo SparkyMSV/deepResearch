@@ -25,12 +25,17 @@ _pdf_seen: dict[int, set[str]] = {}  # task_id -> PDF URLs already read in that 
 
 PLAN_PROMPT = (
     "Split the research objective into at most {n} independent sub-tasks, each answerable by web search. "
+    "Rule: when a sub-task needs figures (financials such as revenue, EBITDA, debt or ratios, or any statistics) "
+    "that an official PDF holds, such as an annual report, financial statements, a regulatory filing or a "
+    "government report, set needs_document to that document with its organisation and period "
+    "(e.g. \"Tata Motors annual report 2023-24\"). Rely on web pages only for figures no such document holds. "
     'Reply with JSON only: {{"subtasks":[{{"objective":"...","query":"web search query",'
     '"needs_document":"name of a specific document to find as a PDF, or empty string"}}]}}'
 )
 CHECKIN_PROMPT = (
     "You supervise a web research loop. Judge whether the evidence answers the objective. "
-    "Any query you give must differ from the queries so far. Reply with JSON only: "
+    "Any query you give must differ from the queries so far. When figures are missing, prefer a query that "
+    "finds the official PDF (annual report, filing) holding them over web pages. Reply with JSON only: "
     '{"decision":"continue|sufficient|restart","query":"next query","objective":"refined objective",'
     '"off_target_loops":[loop numbers whose evidence is off-target]}'
 )
@@ -38,6 +43,7 @@ REPORT_PROMPT = (
     "Write a research report in markdown answering the objective from the evidence below only. "
     "Every figure or claim must cite its source (URL, or PDF name + page) and its date. "
     "Use only figures present in the evidence; never invent or extrapolate numbers. "
+    "When sources disagree on a figure, prefer the one from a PDF document (cited with a page). "
     'For evidence without a published date write "accessed <fetched_at>, publish date unknown" '
     "and flag it as lower confidence. List the gaps from incomplete sub-tasks in a final section."
 )
@@ -227,11 +233,15 @@ async def _checkin(conn, conv_id: int, st: dict, queries: list[str]) -> dict | N
     return d
 
 
-async def _rewrite(st: dict, query: str, queries: list[str]) -> str | None:
+async def _rewrite(conn, st: dict, query: str, queries: list[str]) -> str | None:
     """Qwen's next query, or None if after 3 tries it only repeats queries already tried."""
     user = (f"Objective: {st['objective']}\nQueries tried:\n" + "\n".join(queries)
             + "\nWrite the next web search query to find missing facts. It must differ from every query "
             'tried. Reply with JSON only: {"query":"..."}')
+    if st["needs_document"] and not conn.execute(
+            "select 1 from evidence where subtask_id=? and page is not null", (st["id"],)).fetchone():
+        user += (f"\nThe figures should come from the PDF \"{st['needs_document']}\", not yet found. "
+                 "Aim the query at that PDF (add 'pdf' or the publisher's site).")
     for _ in range(3):
         raw = (parse_json(await qwen([{"role": "user", "content": user}], priority=WORK)) or {}).get("query")
         new = _fresh(raw, queries)
@@ -310,7 +320,7 @@ async def run_subtask(conn, conv_id: int, subtask_id: int) -> None:
                     log.info("using the supervisor's query %r", q)
                     query, stuck = q, False
                     continue
-        new = await _rewrite(st, query, queries)
+        new = await _rewrite(conn, st, query, queries)
         if new is None:
             stuck = True
         else:
