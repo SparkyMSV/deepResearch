@@ -50,7 +50,7 @@ async def review(ctx, sub, allow_reopen: bool, ask) -> str | None:
     Returns 'reopened', 'blocked' (it wanted to reopen work but the restart cap stops it), 'ok', or None
     when the call failed or the reply wasn't JSON."""
     msgs = [{"role": "system", "content": CHECKIN_PROMPT},
-            {"role": "user", "content": f"Objective: {sub['objective']}\n{_table(ctx, sub)}"[:TABLE_MAX_CHARS]}]
+            {"role": "user", "content": f"Today is {ctx.today}. Objective: {sub['objective']}\n{_table(ctx, sub)}"[:TABLE_MAX_CHARS]}]
     try:
         raw = await ask(msgs)
     except openai.APIError as e:  # end this sub-task only; siblings keep running

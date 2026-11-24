@@ -1,6 +1,7 @@
 """Qwen reads one page (PDF or web) and fills open fields, each value backed by a verbatim quote."""
 import json
 import logging
+import re
 
 from app.db import insert
 from app.local_llm import WORK, parse_json, qwen
@@ -64,7 +65,7 @@ async def read_page(ctx, sub, text: str, source: dict, nav: bool) -> tuple[list[
         f = _match(item.get("field"), want)
         quote = item.get("quote") if isinstance(item.get("quote"), str) else ""
         value = item.get("value")
-        if f is None or value in (None, "") or not norm(quote) or norm(quote) not in page:
+        if f is None or value in (None, "") or not _supported(str(value), quote, page):
             log.info("dropped value %s (field %r): quote %s", clip(value, 40), item.get("field"),
                      f"not on the page: {clip(quote, 160)!r}" if quote else "missing")
             continue
@@ -82,6 +83,19 @@ async def read_page(ctx, sub, text: str, source: dict, nav: bool) -> tuple[list[
     if nav and not (isinstance(nxt, int) and not isinstance(nxt, bool)) and nxt not in ("contents", "leave"):
         nxt = int(nxt) if isinstance(nxt, str) and nxt.isdigit() else "leave"
     return filled, nxt
+
+
+MIN_QUOTE = 12
+
+
+def _supported(value: str, quote: str, page: str) -> bool:
+    """The quote is on the page (each part, if Qwen elided with '...'), is long enough to mean something, and
+    contains the value's digits when the value has any (a lone '1' quoted from a table proves nothing)."""
+    parts = [norm(p) for p in re.split(r"\.\.\.|\u2026", quote or "") if norm(p)]
+    if not parts or sum(len(p) for p in parts) < MIN_QUOTE or any(p not in page for p in parts):
+        return False
+    digits = re.sub(r"\D", "", value)
+    return not digits or digits in re.sub(r"\D", "", " ".join(parts))
 
 
 def _bare_list(raw: str) -> list | None:

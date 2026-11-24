@@ -89,3 +89,10 @@ def test_unparseable_or_api_error_returns_none(env):
 
 def test_prompt_says_document_issuer_is_the_rated_company():
     assert "the rated company, not the agency" in checkin.CHECKIN_PROMPT
+
+
+def test_checkin_is_told_today(env):
+    c, sub = env
+    ask = reply({})
+    asyncio.run(checkin.review(c, sub, True, ask))
+    assert "Today is 2026-11-24" in ask.msgs[1]["content"]

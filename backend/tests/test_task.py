@@ -80,7 +80,7 @@ def counter():
 def test_document_first_fills_fields_and_finishes_done(monkeypatch):
     env = Env(monkeypatch, checkins=[{"fields": [{"name": "Gross NPA %", "action": "accept"}]}],
               qwen_rules=[("Options:", {"do": "D1"}),
-                          ("Page 1 of D1", {"found": [{"field": 1, "value": "2.1", "unit": "%", "quote": "GNPA 2.1%"}],
+                          ("Page 1 of D1", {"found": [{"field": 1, "value": "2.1", "unit": "%", "quote": "GNPA 2.1% at March 2026"}],
                                             "next": "leave"})])
     env.doc(["GNPA 2.1% at March 2026"])
     sid = env.subtask()

@@ -107,3 +107,11 @@ def test_rejected_quote_is_logged(env, monkeypatch, caplog):
     with caplog.at_level("INFO", logger="app.fields"):
         asyncio.run(fields.read_page(c, sub, PAGE, DOC, nav=False))
     assert "GNPA stood at 2.1 percent" in caplog.text
+
+
+def test_short_quote_or_missing_digits_rejected_elided_quote_accepted(env, monkeypatch):
+    c, sub = env
+    use(monkeypatch, found((1, "1", "1"), (2, "5.0", "NNPA was 0.9%")))
+    assert asyncio.run(fields.read_page(c, sub, PAGE, DOC, nav=False))[0] == []
+    use(monkeypatch, found((1, "2.1", "The Company's GNPA ... was 2.1% and NNPA")))
+    assert len(asyncio.run(fields.read_page(c, sub, PAGE, DOC, nav=False))[0]) == 1
