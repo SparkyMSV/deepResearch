@@ -48,9 +48,9 @@ def run(monkeypatch, pdf_bytes, triage, facts=None):
         return triage if len(prompts) == 1 else (facts or '{"facts": []}')
 
     monkeypatch.setattr(pdf, "cloud", fake_cloud)
-    out, about = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
-    assert about.endswith("(12 pages)")
-    return out, prompts
+    r = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
+    assert r.about.endswith("(12 pages)")
+    return r.evidence, prompts
 
 
 def test_reads_only_triaged_pages(monkeypatch, pdf_bytes):
@@ -107,5 +107,19 @@ def test_triage_says_what_the_document_is(monkeypatch, pdf_bytes):
         return '{"about": "Acme Ltd annual report FY2024", "pages": []}'
 
     monkeypatch.setattr(pdf, "cloud", fake_cloud)
-    out, about = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
-    assert out == [] and about == "Acme Ltd annual report FY2024 (12 pages)"
+    r = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:")))
+    assert r == ([], "Acme Ltd annual report FY2024 (12 pages)", [])
+
+
+def test_deeper_read_skips_pages_already_read(monkeypatch, pdf_bytes):
+    monkeypatch.setattr(pdf.requests, "get", lambda *a, **k: Resp(pdf_bytes))
+    prompts = []
+
+    async def fake_cloud(role, messages, conn):
+        prompts.append(messages[-1]["content"])
+        return '{"pages": [[8, 10]]}' if len(prompts) == 1 else '{"facts": []}'
+
+    monkeypatch.setattr(pdf, "cloud", fake_cloud)
+    r = asyncio.run(pdf.read_pdf(URL, "revenue", 1, 0, connect(":memory:"), skip=[9]))
+    assert "Pages [9] were already read" in prompts[0]
+    assert r.pages == [8, 10] and "[page 9]" not in prompts[1]

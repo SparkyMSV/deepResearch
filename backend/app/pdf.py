@@ -8,6 +8,7 @@ import os
 import threading
 import tempfile
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 import indra_ocr
 import pypdfium2 as pdfium
@@ -26,6 +27,12 @@ TRIAGE_PAGES = 8
 MAX_PAGES = 30
 _conv = None
 _lock = threading.Lock()  # converter/pdfium are not assumed thread-safe
+
+
+class PdfRead(NamedTuple):
+    evidence: list[Evidence]
+    about: str  # one line on what the document is, for other sub-tasks
+    pages: list[int]  # pages read this time; [] means nothing (more) worth reading
 
 
 def _converter():
@@ -72,8 +79,8 @@ def _tagged(pages: dict[int, str]) -> str:
     return "\n\n".join(f"[page {i}]\n{t}" for i, t in pages.items())
 
 
-async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn) -> tuple[list[Evidence], str]:
-    """Facts for the objective, and a one-line note on what the document is (for other sub-tasks)."""
+async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn, skip: list[int] = ()) -> PdfRead:
+    """Facts for the objective from the pages triage picks; skip: pages already read (a deeper read)."""
     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
     tmp.close()
     try:
@@ -84,17 +91,19 @@ async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn) -
                  os.path.getsize(tmp.name) / 1e6, n, len(head))
         triage = await cloud("pdf", [{"role": "user", "content": (
             f"Objective: {objective}\nThe PDF has {n} pages. Here are the first {len(head)}:\n\n{_tagged(head)}\n\n"
-            'Using the contents, pick the pages most likely to answer the objective. '
+            + (f"Pages {list(skip)} were already read; pick other pages, or none if nothing else is relevant. "
+               if skip else "")
+            + 'Using the contents, pick the pages most likely to answer the objective. '
             'Printed page numbers in the contents may be offset from the [page N] tags; use the tags. '
             'Also say what the document is in at most 12 words (issuer, type, period). '
             'Reply as JSON only: {"about": "...", "pages": [[start, end], ...]} (1-based, inclusive).')}], conn)
         t = parse_json(triage) or {}
         about = f"{clip(t.get('about') or url.split('?')[0].rsplit('/', 1)[-1], 100)} ({n} pages)"
         log.info("pdf %s: about %r", url, about)
-        pages = _page_list(t.get("pages"), n)
+        pages = [p for p in _page_list(t.get("pages"), n) if p not in skip]
         if not pages:
-            log.info("pdf %s: triage picked no pages (reply: %s)", url, clip(triage))
-            return [], about
+            log.info("pdf %s: triage picked no %spages (reply: %s)", url, "new " if skip else "", clip(triage))
+            return PdfRead([], about, [])
         log.info("pdf %s: triage picked pages %s; reading them", url, pages)
         body, _ = await asyncio.to_thread(_read_pages, tmp.name, pages)
         raw = await cloud("pdf", [{"role": "user", "content": (
@@ -110,5 +119,6 @@ async def read_pdf(url: str, objective: str, subtask_id: int, loop: int, conn) -
     for f in facts if isinstance(facts, list) else []:
         if isinstance(f, dict):
             log.debug("  p%s %s", f.get("page"), clip(f.get("fact"), 200))
-    return ([Evidence(subtask_id, loop, url, title, f["fact"], f.get("period") or None, now, f.get("page"))
-             for f in facts if isinstance(f, dict) and f.get("fact")] if isinstance(facts, list) else []), about
+    return PdfRead([Evidence(subtask_id, loop, url, title, f["fact"], f.get("period") or None, now, f.get("page"))
+                    for f in facts if isinstance(f, dict) and f.get("fact")] if isinstance(facts, list) else [],
+                   about, pages)
