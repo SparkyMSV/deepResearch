@@ -107,6 +107,15 @@ budgets.
    and the report labels them "confirmed", "checked locally" or "unreviewed".
 5. **Report** (cloud, unchanged prompt and inputs).
 
+**Consistency checks (only when the figures exist).** Research usually fills a handful of figures, not
+whole financial statements, so identity checks run only when *every* figure in an identity was filled for
+the same entity and period, e.g. total assets = total liabilities + equity; net profit = revenue − total
+expenses (± tax); net NPA ≈ gross NPA − provisions. Fields are matched to an identity by name (a small
+alias list, case-insensitive). A mismatch beyond 1% (after unit normalisation: crore, lakh, million,
+billion) never rejects a value: it adds a note to each value in the identity ("doesn't add up: assets
+1,200 ≠ liabilities 900 + equity 250") that the cloud final review sees and the report repeats. No
+identity applies → nothing happens.
+
 ### 3. The agent loop (one sub-task)
 
 **Opening (fixed for the whole loop, cached):** system rules (how to work, quote exactly, one field
