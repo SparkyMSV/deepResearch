@@ -56,6 +56,21 @@ def _evidence(conn, conv_id: int, text: str) -> str:
     return "\n".join(f"[{r['url']}] {r['passage']}" for n, r in scored if n)
 
 
+def _fields(conn, conv_id: int) -> str:
+    """The latest research's fields table, for follow-up questions."""
+    t = conn.execute("select id from tasks where conversation_id=? order by id desc limit 1", (conv_id,)).fetchone()
+    if not t:
+        return ""
+    lines = []
+    for f in conn.execute("select * from fields where task_id=? order by id", (t["id"],)):
+        src = f" [{f['source_key'] or f['source_url']}{f', p.' + str(f['page']) if f['page'] else ''}]" \
+            if f["value"] else ""
+        state = "accepted" if f["accepted"] else "unreviewed" if f["status"] == "found" else f["status"]
+        lines.append(f"{f['name']} ({f['entity'] or 'any'}, {f['period']}): "
+                     f"{(f['value'] or '') + (f['unit'] or '') if f['value'] else '—'}{src} ({state})")
+    return ("Research fields:\n" + "\n".join(lines))[:4000] if lines else ""
+
+
 def _report(conn, conv_id: int) -> str:
     r = conn.execute("select content from messages where conversation_id=? and kind='report' "
                      "order by id desc limit 1", (conv_id,)).fetchone()
@@ -139,7 +154,7 @@ async def _handle(conn, conv_id: int, text: str) -> None:
         _bg.add(t)
         t.add_done_callback(_bg.discard)
     else:
-        context = "\n\n".join(x for x in (_report(conn, conv_id), _evidence(conn, conv_id, text)) if x)
+        context = "\n\n".join(x for x in (_report(conn, conv_id), _fields(conn, conv_id), _evidence(conn, conv_id, text)) if x)
         prompt = ANSWER_PROMPT if context else GENERAL_PROMPT
         log.info("answering from %s", f"{len(context)} chars of saved report/evidence" if context
                  else "general knowledge (no evidence)")

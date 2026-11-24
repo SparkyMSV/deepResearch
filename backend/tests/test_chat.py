@@ -163,3 +163,15 @@ def test_followup_search_falls_back_to_typed_text(monkeypatch):
     env.router = "not json"
     asyncio.run(chat.handle_message(env.conn, env.conv, "search: b"))
     assert env.searches[-1][0] == "b"
+
+
+def test_fields_context_lists_latest_task_fields():
+    from app.db import connect, insert
+    conn = connect(":memory:")
+    cid = insert(conn, "conversations", title="c")
+    tid = insert(conn, "tasks", conversation_id=cid, objective="o", status="done")
+    insert(conn, "fields", task_id=tid, subtask_id=1, name="Gross NPA %", entity="Navi", period="FY26", status="found",
+           value="2.1", unit="%", source_key="D1", page=4, accepted=1)
+    insert(conn, "fields", task_id=tid, subtask_id=1, name="PCR", entity="Navi", period="FY26", status="unavailable")
+    out = chat._fields(conn, cid)
+    assert "Gross NPA % (Navi, FY26): 2.1% [D1, p.4] (accepted)" in out and "PCR (Navi, FY26): — (unavailable)" in out
