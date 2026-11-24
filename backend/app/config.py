@@ -47,7 +47,16 @@ MAX_SUBTASKS = _positive_int("DR_MAX_SUBTASKS", 8)
 CHECKIN_EVERY = 5
 ROUNDS_PER_LOOP = _positive_int("DR_ROUNDS_PER_LOOP", 20)
 MAX_RESTARTS = _positive_int("DR_MAX_RESTARTS", 2)
-MAX_PAGES = _positive_int("DR_MAX_PAGES", 150)  # pages Qwen may read per research (PDF and web)
+MAX_PAGES = _positive_int("DR_MAX_PAGES", 150)
+MAX_STEPS = _positive_int("DR_MAX_STEPS", 30)  # Bonsai tool calls per loop
+CONTEXT_TOKENS = _positive_int("DR_CONTEXT_TOKENS", 12000)  # compact the agent conversation past this
+RESEARCH_URL = os.environ.get("DR_RESEARCH_URL", "").strip() or "http://127.0.0.1:8001/v1"  # Bonsai on MTPLX
+CHAT_URL = os.environ.get("DR_CHAT_URL", "").strip() or "http://127.0.0.1:8002/v1"  # Qwen 3.5 4B on MTPLX
+SEARCH_BACKENDS = os.environ.get("DR_SEARCH_BACKENDS", "").strip() or \
+    "yahoo,bing,brave,duckduckgo,google,mojeek,startpage"
+for _old in ("DR_ROUNDS_PER_LOOP",):
+    if os.environ.get(_old):
+        log.info("%s is no longer used (the research agent uses DR_MAX_STEPS)", _old)  # pages Qwen may read per research (PDF and web)
 
 SEARCH_MAX_RESULTS = _positive_int("DR_SEARCH_MAX_RESULTS", 8)  # every result is fetched and read
 # DuckDuckGo region code, e.g. in-en (India), us-en, uk-en, wt-wt (no region)
