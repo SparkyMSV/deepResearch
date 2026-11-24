@@ -37,7 +37,7 @@ def plan_doc(c):
 
 def test_find_document_screens_then_verifies(monkeypatch):
     store = FakeStore({NAVI: ["Navi Finserv Limited Annual Report 2025-26"], NAZARA: ["Nazara"]})
-    q = ScriptedQwen(("Is this that document", {"match": True, "about": "Navi Finserv AR FY26", "covers": "financials"}))
+    q = ScriptedQwen(("Another year is fine", {"match": True, "about": "Navi Finserv AR FY26", "covers": "financials"}))
     hits = [Hit("Annual Report FY 25-26", NAZARA, "Nazara Technologies"), Hit("Navi Finserv annual report", NAVI, "")]
     c, _ = make(monkeypatch, store, q, hits)
     asyncio.run(docs.find_document(c, plan_doc(c)))
@@ -49,7 +49,7 @@ def test_find_document_screens_then_verifies(monkeypatch):
 def test_find_document_not_found_after_three_rejections(monkeypatch):
     urls = [f"http://navi.com/{i}.pdf" for i in range(4)]
     store = FakeStore({u: ["Navi Finserv something"] for u in urls})
-    q = ScriptedQwen(("Is this that document", {"match": False}))
+    q = ScriptedQwen(("Another year is fine", {"match": False}))
     c, _ = make(monkeypatch, store, q, [Hit("Navi Finserv", u, "") for u in urls])
     asyncio.run(docs.find_document(c, plan_doc(c)))
     assert c.doc("D1")["status"] == "not_found" and len(q.prompts) == 3
@@ -126,3 +126,12 @@ def test_add_found_pdf_becomes_next_document(monkeypatch):
 
 def test_page_ranges():
     assert docs.page_ranges({1, 2, 3, 7, 9, 10}) == "pp. 1–3, 7, 9–10"
+
+
+def test_verify_asks_about_the_company_not_the_exact_period(monkeypatch):
+    store = FakeStore({NAVI: ["CARE Ratings: Navi Finserv Limited, December 2025 " * 20]})
+    q = ScriptedQwen(("Another year is fine", {"match": True, "about": "CARE rationale"}))
+    c, _ = make(monkeypatch, store, q)
+    r = asyncio.run(docs.verify(c, NAVI, {"issuer": "Navi Finserv Limited", "type": "rating rationale",
+                                          "period": "FY2025-26"}))
+    assert r["about"] == "CARE rationale"

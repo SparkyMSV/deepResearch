@@ -86,3 +86,13 @@ def test_web_search_pdf_becomes_document(env, monkeypatch):
     qwen(monkeypatch, ("Results:", {"open": [1]}), ("about Navi Finserv", {"match": True, "about": "CARE note"}))
     asyncio.run(explore.web_search(c, sub, "navi rating", field))
     assert c.doc("D3")["url"] == url
+
+
+def test_choose_example_names_a_real_document(env, monkeypatch):
+    c, sub, field = env
+    q = qwen(monkeypatch, ("Options:", {"do": "D1"}))
+    asyncio.run(explore.choose(c, sub, field))
+    assert '{"do":"D1"}' in q.prompts[0]
+    sub["done_docs"] |= {"D1"}
+    asyncio.run(explore.choose(c, sub, field))
+    assert '{"do":"D2"}' in q.prompts[1] and '"D1"' not in q.prompts[1]

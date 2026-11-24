@@ -68,3 +68,9 @@ def test_bad_json_retries_then_falls_back(monkeypatch):
     assert len(run(conn, tid)) == 1 and len(prompts) == 2
     f = conn.execute("select * from fields").fetchone()
     assert (f["name"], f["kind"], f["period"]) == ("obj", "fact", "latest")
+
+
+def test_prompt_says_issuer_is_the_rated_company(monkeypatch):
+    conn, tid, prompts = setup(monkeypatch, json.dumps(EXAMPLE))
+    run(conn, tid)
+    assert "the rated company, not the agency" in prompts[0][0]["content"]

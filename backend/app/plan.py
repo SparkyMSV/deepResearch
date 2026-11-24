@@ -16,7 +16,8 @@ PLAN_PROMPT = (
     "Split it into at most {n} sub-tasks. Each sub-task lists fields: specific figures (number + unit) or short "
     "facts, each for a named entity and period. Prefer the latest complete period available as of today. "
     "For figures prefer official documents (annual report, audited results, filings, rating rationales, "
-    "government statistics) and list them as documents with the sites likely to host them. Qualitative "
+    "government statistics) and list them as documents with the sites likely to host them. A document's issuer "
+    "is the company it is about (for a rating rationale, the rated company, not the agency). Qualitative "
     "questions become short-fact fields. Don't plan fields that need private data. Reply with JSON only: "
     '{{"documents":[{{"key":"D1","name":"...","issuer":"...","type":"annual report","period":"FY2025-26",'
     '"search":"web search query","domains":["example.com"]}}],"subtasks":[{{"objective":"...","fields":[{{'

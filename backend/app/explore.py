@@ -44,7 +44,9 @@ async def choose(ctx, sub, field: dict) -> tuple[str, str | None]:
               + (f"Also open: {', '.join(others)}\n" if others else "")
               + f"Tried: {'; '.join(tried) or 'nothing yet'}\nOptions:\n" + "\n".join(opts + [" [S] web search",
                                                                                          " [X] not public"])
-              + '\nReply JSON only: {"do":"D1"} or {"do":"S","query":"..."} or {"do":"X","why":"..."}')
+              # the example names a real listed document: a small model copies example keys verbatim
+              + "\nReply JSON only: " + (f'{{"do":"{docs[0]["key"]}"}} or ' if docs else "")
+              + '{"do":"S","query":"..."} or {"do":"X","why":"..."}')
     keys = {d["key"] for d in docs}
     for _ in range(2):
         d = await _ask(prompt) or {}

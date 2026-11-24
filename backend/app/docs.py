@@ -52,8 +52,10 @@ async def _verify(ctx, url: str, expect: dict, about_entity: bool) -> dict | Non
     except Exception as e:
         log.warning("verify %s: unreadable: %r", url, e)
         return None
-    ask = (f"Is this PDF about {expect['issuer']} for {expect['period']}?" if about_entity else
-           f"Expected: {expect['issuer']}, {expect['type']}, {expect['period']}. Is this that document?")
+    # who it's about decides; type and period are judged later from the values (strict checks rejected good PDFs)
+    ask = (f"Is this PDF about {expect['issuer']}?" if about_entity else
+           f"Wanted: a {expect['type']} about {expect['issuer']} (ideally {expect['period']}). Is this PDF about "
+           f"{expect['issuer']} and of that kind? Another year is fine.")
     d = await _ask(f"Start of a PDF ({n} pages):\n{text[:3000]}\n\n{ask} Reply JSON only: "
                    '{"match":true|false,"about":"what it is, at most 12 words","covers":"main contents, at most 12 words"}')
     if not d or d.get("match") is not True:
