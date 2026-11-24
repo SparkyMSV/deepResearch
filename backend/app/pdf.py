@@ -55,13 +55,16 @@ def _ocr(path: str, n: int) -> tuple[str, int]:
             doc.close()
 
 
-_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
+_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-",
+                         "|": " ", "*": " ", "\ufb01": "fi", "\ufb02": "fl"})
 _ENTRY = re.compile(r"^(.{3,80}?)[\s.\u00b7\u2026_-]{2,}(\d{1,4})\s*$")
 
 
 def norm(s: str) -> str:
     """Whitespace collapsed and curly quotes straightened, for verbatim checks."""
-    return " ".join((s or "").translate(_QUOTES).split())
+    s = re.sub(r"(\w)-\n(\w)", r"\1\2", s or "")  # words hyphenated across a line break
+    s = re.sub(r"(?m)^\s*[-:| ]{3,}\s*$", " ", s)  # markdown table rule lines
+    return " ".join(s.translate(_QUOTES).split())
 
 
 class Contents(NamedTuple):

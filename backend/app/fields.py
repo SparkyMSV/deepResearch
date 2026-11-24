@@ -21,8 +21,9 @@ def open_fields(conn, subtask_id: int) -> list[dict]:
 def _wanted(conn, subtask_id: int, kind: str) -> list[dict]:
     """Fields a page may fill: open ones, plus (for documents) found-from-web values a document may replace."""
     rows = [dict(r) for r in conn.execute(
-        "select * from fields where subtask_id=? and accepted=0 and (status='open' or "
-        "(status='found' and source_kind='web' and ?='doc')) order by id", (subtask_id, kind))]
+        "select * from fields where subtask_id=? and accepted=0 and ((status='open' and "
+        "not (?='web' and coalesce(source_kind,'')='doc')) or (status='found' and source_kind='web' and ?='doc')) "
+        "order by id", (subtask_id, kind, kind))]
     return rows
 
 

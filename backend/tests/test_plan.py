@@ -54,7 +54,7 @@ def test_caps_and_cleanup(monkeypatch):
     subs = [{"objective": f"s{i}", "fields": [{"name": f"f{i}-{j}", "entity": "E", "kind": "weird",
                                                "sources": ["X0", "D9"]} for j in range(10)]} for i in range(10)]
     conn, tid, _ = setup(monkeypatch, json.dumps({"documents": docs, "subtasks": subs}))
-    assert len(run(conn, tid)) == 8
+    assert len(run(conn, tid)) == 5  # 8 fields each: the 40-field cap is reached after 5 sub-tasks
     assert conn.execute("select count(*) from documents").fetchone()[0] == 6
     assert [r[0] for r in conn.execute("select key from documents order by id")] == [f"D{i}" for i in range(1, 7)]
     rows = conn.execute("select * from fields").fetchall()
@@ -74,3 +74,12 @@ def test_prompt_says_issuer_is_the_rated_company(monkeypatch):
     conn, tid, prompts = setup(monkeypatch, json.dumps(EXAMPLE))
     run(conn, tid)
     assert "the rated company, not the agency" in prompts[0][0]["content"]
+
+
+def test_field_cap_never_leaves_empty_subtasks(monkeypatch):
+    subs = [{"objective": f"s{i}", "fields": [{"name": f"f{i}-{j}", "entity": "E"} for j in range(8)]} for i in range(8)]
+    conn, tid, _ = setup(monkeypatch, json.dumps({"documents": [], "subtasks": subs}))
+    run(conn, tid)
+    empty = conn.execute("select count(*) from subtasks s where not exists "
+                         "(select 1 from fields f where f.subtask_id=s.id)").fetchone()[0]
+    assert empty == 0

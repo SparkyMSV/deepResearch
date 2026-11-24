@@ -115,3 +115,20 @@ def test_short_quote_or_missing_digits_rejected_elided_quote_accepted(env, monke
     assert asyncio.run(fields.read_page(c, sub, PAGE, DOC, nav=False))[0] == []
     use(monkeypatch, found((1, "2.1", "The Company's GNPA ... was 2.1% and NNPA")))
     assert len(asyncio.run(fields.read_page(c, sub, PAGE, DOC, nav=False))[0]) == 1
+
+
+def test_web_never_replaces_document_value_on_a_reopened_field(env, monkeypatch):
+    c, sub = env
+    use(monkeypatch, found((1, "2.1", "GNPA was 2.1% and NNPA")))
+    asyncio.run(fields.read_page(c, sub, PAGE, DOC, nav=False))
+    c.conn.execute("update fields set status='open' where name='Gross NPA %'")  # check-in 'retry' keeps the value
+    use(monkeypatch, found((1, "0.9", "NNPA was 0.9% as of 31 March")))
+    asyncio.run(fields.read_page(c, sub, PAGE, WEB, nav=False))
+    assert (row(c, "Gross NPA %")["value"], row(c, "Gross NPA %")["source_kind"]) == ("2.1", "doc")
+
+
+def test_markdown_table_quote_matches(env, monkeypatch):
+    c, sub = env
+    table = "| Metric | FY26 |\n|---|---|\n| **Gross NPA** | **2.1%** |\n| Net NPA – ratio | 0.9% |"
+    use(monkeypatch, found((1, "2.1", "Gross NPA 2.1%"), (2, "0.9", "Net NPA - ratio 0.9%")))
+    assert len(asyncio.run(fields.read_page(c, sub, table, DOC, nav=False))[0]) == 2

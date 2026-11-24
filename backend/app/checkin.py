@@ -20,7 +20,7 @@ CHECKIN_PROMPT = (
     "available; say why in note) or retry (keep looking; give a hint on where to look and/or a new search). "
     "You may add up to 3 missing fields, or ask for one more document to find; its issuer is the company it is "
     "about (for a rating rationale, the rated company, not the agency). Reply with JSON only: "
-    '{"fields":[{"name":"...","action":"accept|reject|unavailable|retry","hint":"...","search":"...","note":"..."}],'
+    '{"fields":[{"field":1,"action":"accept|reject|unavailable|retry","hint":"...","search":"...","note":"..."}],'
     '"add_fields":[{"name":"...","entity":"...","period":"...","kind":"figure|fact","search":"...","hint":"..."}],'
     '"find_document":{"name":"...","issuer":"...","type":"...","period":"...","search":"..."}}'
 )
@@ -30,13 +30,24 @@ def fields_of(conn, subtask_id: int) -> list[dict]:
     return [dict(r) for r in conn.execute("select * from fields where subtask_id=? order by id", (subtask_id,))]
 
 
+def _row_for(a: dict, rows: list[dict]) -> dict | None:
+    """The field a review item means: its number in the table, else its name (and entity, if given)."""
+    n = a.get("field")
+    n = int(n) if isinstance(n, str) and n.strip().isdigit() else n
+    if isinstance(n, int) and not isinstance(n, bool):
+        return rows[n - 1] if 1 <= n <= len(rows) else None
+    name, ent = str(a.get("name") or "").strip().lower(), str(a.get("entity") or "").strip().lower()
+    return next((f for f in rows if f["name"].lower() == name and (not ent or (f["entity"] or "").lower() == ent)),
+                None)
+
+
 def _table(ctx, sub) -> str:
     rows = []
-    for f in fields_of(ctx.conn, sub["id"]):
+    for i, f in enumerate(fields_of(ctx.conn, sub["id"]), 1):
         state = "accepted" if f["accepted"] else f["status"]
         page = f" p.{f['page']}" if f["page"] else ""
         src = f"{f['source_key'] or f['source_url'] or ''}{page}"
-        rows.append(f"- {f['name']} | {f['entity'] or 'any'} | {f['period']} | {state} | "
+        rows.append(f"[{i}] {f['name']} | {f['entity'] or 'any'} | {f['period']} | {state} | "
                     + (f"{f['value']} {f['unit'] or ''} (reported period: {f['reported_period'] or '?'}) | {src} | "
                        f"quote: \"{f['quote']}\"" if f["value"] else "no value")
                     + (f" | note: {f['note']}" if f["note"] else ""))
@@ -47,7 +58,8 @@ def _table(ctx, sub) -> str:
 
 async def review(ctx, sub, allow_reopen: bool, ask) -> str | None:
     """Apply the larger model's review. ask(messages) -> reply text (the caller handles quota pauses).
-    Returns 'reopened', 'blocked' (it wanted to reopen work but the restart cap stops it), 'ok', or None
+    Returns 'reopened', 'blocked' (it wanted to reopen work but the restart cap stops it), 'steered' (only new
+    hints/searches for fields still open), 'ok', or None
     when the call failed or the reply wasn't JSON."""
     msgs = [{"role": "system", "content": CHECKIN_PROMPT},
             {"role": "user", "content": f"Today is {ctx.today}. Objective: {sub['objective']}\n{_table(ctx, sub)}"[:TABLE_MAX_CHARS]}]
@@ -61,8 +73,8 @@ async def review(ctx, sub, allow_reopen: bool, ask) -> str | None:
         log.warning("check-in reply unparseable: %s", clip(raw))
         return None
     log.info("check-in: %s", clip(d, 300))
-    by_name = {f["name"].lower(): f for f in fields_of(ctx.conn, sub["id"])}
-    reopened = blocked = False
+    rows = fields_of(ctx.conn, sub["id"])
+    reopened = blocked = steered = False
 
     def reopen(what: str) -> bool:
         nonlocal reopened, blocked
@@ -74,8 +86,8 @@ async def review(ctx, sub, allow_reopen: bool, ask) -> str | None:
         return allow_reopen
 
     for a in d.get("fields") or [] if isinstance(d.get("fields"), list) else []:
-        f = by_name.get(str(a.get("name") or "").strip().lower()) if isinstance(a, dict) else None
-        if f is None:
+        f = _row_for(a, rows) if isinstance(a, dict) else None
+        if f is None or f["accepted"]:  # nothing replaces or reopens an accepted value
             continue
         act = a.get("action")
         if act == "accept" and f["status"] == "found":
@@ -85,6 +97,10 @@ async def review(ctx, sub, allow_reopen: bool, ask) -> str | None:
         elif act == "reject" and reopen(f"reject {f['name']}"):
             ctx.set_field(f, status="open", accepted=0, value=None, unit=None, reported_period=None, source_url=None,
                           source_key=None, page=None, quote=None, source_kind=None, note=a.get("note"))
+        elif act == "retry" and f["status"] == "open":  # steering only: new hint/search for Qwen
+            cols = {k: a[k].strip() for k in ("hint", "search") if isinstance(a.get(k), str) and a[k].strip()}
+            ctx.set_field(f, **cols)
+            steered = steered or bool(cols)
         elif act == "retry" and reopen(f"retry {f['name']}"):
             cols = {"status": "open", "accepted": 0} if f["status"] == "unavailable" else {}
             for k in ("hint", "search"):
@@ -96,7 +112,7 @@ async def review(ctx, sub, allow_reopen: bool, ask) -> str | None:
     adds = [x for x in d.get("add_fields") or [] if isinstance(x, dict) and str(x.get("name") or "").strip()] \
         if isinstance(d.get("add_fields"), list) else []
     if adds and reopen(f"{len(adds)} new field(s)"):
-        have = len(by_name)
+        have = len(rows)
         total = ctx.conn.execute("select count(*) from fields where task_id=?", (ctx.task_id,)).fetchone()[0]
         for x in adds[:MAX_ADD]:
             if have >= MAX_FIELDS_PER_SUBTASK or total >= MAX_FIELDS:
@@ -115,4 +131,4 @@ async def review(ctx, sub, allow_reopen: bool, ask) -> str | None:
                      period=str(fd.get("period") or "latest"), status="planned",
                      search=str(fd.get("search") or f"{fd['name']} pdf"), domains=json.dumps([]))
         await find_document(ctx, dict(ctx.conn.execute("select * from documents where id=?", (did,)).fetchone()))
-    return "reopened" if reopened else "blocked" if blocked else "ok"
+    return "reopened" if reopened else "blocked" if blocked else "steered" if steered else "ok"

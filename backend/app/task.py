@@ -209,6 +209,10 @@ async def run_subtask(ctx, subtask_id: int) -> None:
             if all(_closed(f) for f in checkin.fields_of(conn, subtask_id)):
                 _set(conn, conv, "subtasks", st, status="done")
                 break
+            if res == "steered" and need == "routine":  # hints only: keep going in this loop
+                res = "ok"
+            if res == "steered":  # at a step limit or stuck: the hints are a new direction, if a restart is left
+                res = "reopened" if allow else "blocked"
             if res == "reopened":
                 log.info("check-in reopened work: loop %d, restart %d/%d", st["loop"] + 1, st["restarts"] + 1,
                          config.MAX_RESTARTS)

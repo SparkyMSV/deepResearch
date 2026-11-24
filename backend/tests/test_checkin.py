@@ -96,3 +96,34 @@ def test_checkin_is_told_today(env):
     ask = reply({})
     asyncio.run(checkin.review(c, sub, True, ask))
     assert "Today is 2026-11-24" in ask.msgs[1]["content"]
+
+
+def two_entities(c, sub):
+    for ent, val in (("Bank A", "1.1"), ("Bank B", "2.2")):
+        insert(c.conn, "fields", task_id=c.task_id, subtask_id=sub["id"], name="Gross NPA %", entity=ent,
+               period="FY26", kind="figure", status="found", value=val, quote="q")
+
+
+def test_checkin_addresses_fields_by_number_so_same_names_stay_apart(env):
+    c, sub = env
+    two_entities(c, sub)
+    ask = reply({"fields": [{"field": 5, "action": "accept"}, {"field": 6, "action": "accept"}]})
+    asyncio.run(checkin.review(c, sub, True, ask))
+    got = c.conn.execute("select entity, accepted from fields where name='Gross NPA %' order by id").fetchall()
+    assert [tuple(r) for r in got] == [("Bank A", 1), ("Bank B", 1)]
+    assert "[5] Gross NPA %" in ask.msgs[1]["content"]
+
+
+def test_hint_only_retry_on_open_field_is_not_a_reopen(env):
+    c, sub = env
+    assert asyncio.run(checkin.review(c, sub, False, reply({"fields": [{"name": "C", "action": "retry",
+                                                                        "hint": "try notes"}]}))) == "steered"
+    assert f(c, "C")["hint"] == "try notes"
+
+
+def test_accepted_values_are_never_undone(env):
+    c, sub = env
+    c.conn.execute("update fields set accepted=1 where name='A'")
+    asyncio.run(checkin.review(c, sub, True, reply({"fields": [{"name": "A", "action": "unavailable"},
+                                                               {"name": "A", "action": "reject"}]})))
+    assert (f(c, "A")["status"], f(c, "A")["value"], f(c, "A")["accepted"]) == ("found", "1", 1)

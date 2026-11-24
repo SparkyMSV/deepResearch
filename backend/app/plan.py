@@ -61,6 +61,9 @@ async def make_plan(conn, task_id: int, objective: str, today: str) -> list[int]
         log.info("  document D%d: %r (%s, %s)", i, _s(d["name"]), _s(d.get("issuer")), _s(d.get("period")))
     ids, total = [], 0
     for s in subs[: config.MAX_SUBTASKS]:
+        if total >= MAX_FIELDS:  # a sub-task with no fields would end "done" with nothing done
+            log.info("plan: field cap %d reached, dropping remaining sub-tasks", MAX_FIELDS)
+            break
         obj = _s(s.get("objective")) or objective
         sid = insert(conn, "subtasks", task_id=task_id, objective=obj, query=obj, status="queued")
         ids.append(sid)

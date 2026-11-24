@@ -32,6 +32,8 @@ class TaskCtx:
             "select * from documents where task_id=? and status=? order by id", (self.task_id, status))]
 
     def _set(self, table: str, kind: str, cols_out: tuple, row: dict, cols: dict) -> None:
+        if not cols:
+            return
         update(self.conn, table, row["id"], **cols)
         row.update(cols)
         events.publish(self.conv_id, {"type": kind, kind: {k: row.get(k) for k in cols_out}})
