@@ -136,3 +136,14 @@ def test_spread_pages_read_once_with_both_halves(env, monkeypatch):
     assert "[pages 14-15]" in read and "6,100 crore" in read and "15" not in read.split("[pages 14-15]")[0]
     f = c.conn.execute("select value, page, printed_page from fields where name='Total Debt'").fetchone()
     assert tuple(f) == ("6,100", 9, 15)
+
+
+def test_every_tool_call_logged_with_args_and_result(env, monkeypatch, caplog):
+    import logging
+    s = Script(Reply("", [call("read_pages", **{"from": 12, "to": 12})], 900),
+               Reply("", [call("record_value", field=1, value="6,100", unit="crore", quote="not on the page", page=12)],
+                     1500), END)
+    with caplog.at_level(logging.INFO, logger="app"):
+        run(env, s, monkeypatch)
+    assert "tool record_value" in caplog.text and "not on the page" in caplog.text and "-> rejected" in caplog.text
+    assert "tool read_pages" in caplog.text and '"from": 12' in caplog.text

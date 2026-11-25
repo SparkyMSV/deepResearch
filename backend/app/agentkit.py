@@ -5,6 +5,7 @@ import logging
 
 from app import config
 from app.local_llm import LocalModelError, local
+from app.logs import clip
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ async def loop(ctx, sub, msgs: list[dict], tools: list[dict], handle, max_steps:
                 steps += 1
                 if c["name"] in finish and done is None:
                     done = c["args"]
+            log.info("tool %s %s -> %s", c["name"], clip(json.dumps(c["args"], ensure_ascii=False), 300), clip(result, 200))
             msgs.append({"role": "tool", "tool_call_id": c["id"], "content": result})
         if done is not None:
             return "finished", done
