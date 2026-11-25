@@ -154,3 +154,26 @@ def test_printed_page_number_corrects_a_title_match_elsewhere():
     pages[16] = "Notes overview\nbody\n15"  # an entry whose title isn't on top: placed by its page number
     p = prep(pages, toc)
     assert [e["pdf"] for e in p.contents] == [6, 12, 17, 22, 27]
+
+
+def test_notes_index_per_section():
+    pages, toc = doc_with_offset_two()
+    pages[12] = "Financial statements\n17 BORROWINGS\nTerm loans 6,100\n18 TRADE PAYABLES\n6 Total Expenses = a + b"
+    pages[13] = "17 BORROWINGS (Continued)\nmore\n19 CAPITAL MANAGEMENT\n5 years"
+    pages[17] = "Notes to accounts\n17 BORROWINGS\nsubsidiary level"
+    p = prep(pages, toc)
+    assert docprep.notes(p, "Financial statements") == [("17", "BORROWINGS", 11), ("18", "TRADE PAYABLES", 11),
+                                                         ("19", "CAPITAL MANAGEMENT", 12)]
+    assert docprep.notes(p, "notes") == [("17", "BORROWINGS", 16)]
+
+
+def test_notes_restarting_in_one_section_and_headers_skipped():
+    pages = [f"filler {i}" for i in range(1, 61)]
+    toc = [("Directors report", 4), ("Financial statements", 10), ("Valuation", 50), ("Risk", 54), ("Glossary", 56)]
+    for t, pr in toc:
+        pages[pr + 2 - 1] = f"{t}\nbody"
+    pages[12] = "392 NEXUS SELECT TRUST 393\n18 BORROWINGS\nstandalone"
+    pages[13] = "18 BORROWINGS\nstill standalone, no continued marker"
+    pages[39] = "394 NEXUS SELECT TRUST 395\n18 BORROWINGS\nconsolidated"
+    p = prep(pages, toc)
+    assert docprep.notes(p, "Financial statements") == [("18", "BORROWINGS", 11), ("18", "BORROWINGS", 38)]

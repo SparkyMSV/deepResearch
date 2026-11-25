@@ -76,6 +76,38 @@ class Prepared:
     scanned: int = 0  # pages without a text layer (not indexed)
     spread: bool = False  # each PDF page holds two printed pages (2-3, 4-5, ...)
     index: PageIndex | None = None
+    notes: list[dict] = field(default_factory=list)  # {"no","title","pdf","section"}: first page of each note
+
+
+NOTE_MAX, REPEAT_GAP, NOTED = 150, 10, 10  # highest note number; pages; notes that make a section "noted"
+_NOTE = re.compile(r"^(\d{1,3}[A-Z]?)\s*[.:)]?\s+([A-Z][A-Z0-9 ,&()/'.:-]{3,70})$")  # "17 BORROWINGS"
+
+
+def _notes(prep: "Prepared", layer: dict[int, str]) -> list[dict]:
+    """Note headings (number + capitals) in the text layer: the first page of each note. A heading repeated
+    within REPEAT_GAP pages is the same note continued; further on (standalone, then consolidated) it's a new one.
+    Running headers ("392 NEXUS SELECT TRUST 393") are skipped."""
+    out, last = [], {}
+    for p, text in sorted(layer.items()):
+        sec = _section(prep, p)
+        for ln in (text or "").splitlines():
+            m = _NOTE.match(ln.strip())
+            if not m or int(re.sub(r"\D", "", m.group(1))) > NOTE_MAX or m.group(2)[-1].isdigit() \
+                    or "CONTINUED" in m.group(2).upper():
+                continue
+            key = (sec, m.group(1), m.group(2).strip())
+            if key not in last or p - last[key] > REPEAT_GAP:
+                out.append({"no": m.group(1), "title": m.group(2).strip(), "pdf": p, "section": sec})
+            last[key] = p
+    return out
+
+
+def notes(prep: "Prepared", section: str) -> list[tuple[str, str, int | None]]:
+    """(note number, title, printed page) for one section (exact name first, else names containing it)."""
+    want = section.strip().lower()
+    names = {n["section"] for n in prep.notes if n["section"]}
+    pick = [x for x in names if x.lower() == want] or [x for x in names if want in x.lower()]
+    return [(n["no"], n["title"], to_printed(prep, n["pdf"])) for n in prep.notes if n["section"] in pick]
 
 
 def _h(prep: Prepared, printed: int) -> int:
@@ -216,6 +248,7 @@ async def prepare(store, url: str) -> Prepared:
                     offs[p - _h(prep, int(ln))] += 1
         if offs and offs.most_common(1)[0][1] >= 3:
             prep.offset, prep.offset_ok = offs.most_common(1)[0][0], True
+    prep.notes = _notes(prep, layer)
     prep.index = PageIndex.build({p: t for p, t in layer.items() if (t or "").strip()}, prep)
     log.info("prepared %s: %d pages%s, %d contents entries (%d located), offset %d (%s), %d scanned pages", url, n,
              " (two-page spreads)" if prep.spread else "", len(prep.contents), sum(1 for e in prep.contents if e["pdf"]),

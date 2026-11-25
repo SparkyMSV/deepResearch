@@ -1,6 +1,7 @@
 """PDF agent: one document, a few fields. It locates anchors, reads whole pages and records values with
 quotes. Page offsets, page extraction and OCR are hidden inside its tools."""
 import logging
+from collections import Counter
 
 from app import agentkit, config, docprep, tables
 from app.ctx import date_note
@@ -23,6 +24,9 @@ _S, _I = {"type": "string"}, {"type": "integer"}
 PDF_TOOLS = [
     _fn("locate", "Find where in the document something is discussed. Returns the best matching places as printed "
         "page, section and a short passage. Use it to choose pages, then read them.", {"query": _S}, ["query"]),
+    _fn("list_notes", "List the numbered notes of a section (e.g. the financial statements) with their printed "
+        "pages: '17 BORROWINGS — p.470'. Use it to go straight to the note that holds a figure.",
+        {"section": _S}, ["section"]),
     _fn("read_pages", "Read whole printed pages from-to (at most 2). Use the page numbers printed in the document.",
         {"from": _I, "to": _I, "section": _S}, ["from", "to"]),
     _fn("record_value", "Record a field's value from a page you read in full. For a figure in a table, give row "
@@ -44,7 +48,11 @@ def _int(v):
 
 
 def _prompt(ctx, doc, prep, fields: list[tuple[int, dict]], goal: str) -> str:
-    contents = "\n".join(f"  {e['title']} .... {e['printed']}" for e in prep.contents) or \
+    counts = Counter(n["section"] for n in prep.notes)
+    noted = {sec for sec, k in counts.items() if k >= docprep.NOTED}  # a few stray capitals don't count
+    contents = "\n".join(f"  {e['title']} .... {e['printed']}" + (" (numbered notes: list_notes)"
+                                                                if e["title"] in noted else "")
+                         for e in prep.contents) or \
         "  (no contents page: use locate)"
     eg_field = fields[0][1]["name"].lower() if fields else "revenue"
     lines = "\n".join(f"[{n}] {f['name']} — {f['entity'] or 'any'}, {f['period']}"
@@ -54,7 +62,8 @@ def _prompt(ctx, doc, prep, fields: list[tuple[int, dict]], goal: str) -> str:
         f"Document {doc['key']}: {doc['about'] or doc['name']} ({prep.pages} pages)"
         + (f"; {doc['notes']}" if doc.get("notes") else "") + f"\nContents (printed page numbers):\n{contents}\n"
         f"Fields to find:\n{lines}\n"
-        "How to work: locate, then read. Call locate with the field's words "
+        "How to work: find the page, then read it. For a figure in financial statements, list_notes of that "
+        "section and pick the note (e.g. borrowings, capital management); otherwise call locate with the field's words "
         f'(e.g. locate(query="{eg_field} {fields[0][1]["period"] if fields else ""}")), read the best pages in full '
         "with read_pages, then record_value with its printed page number and, for a table, the row and column (else a quote). "
         "Only values for the field's entity and period. Don't page through the document blindly. "
@@ -85,6 +94,15 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
                                         if prep.scanned else "; try other words or the contents"))
             return "\n".join(f"p.{h['printed'] if h['printed'] is not None else 'PDF ' + str(h['pdf'])}"
                              f" ({h['section'] or 'no section'}): …{h['passage']}…" for h in hits)
+        if name == "list_notes":
+            sec = str(a.get("section") or "")
+            ns = docprep.notes(prep, sec)
+            on_round(f"{doc['key']} notes {clip(sec, 30)}", 0)
+            if not ns:
+                have = sorted({n["section"] for n in prep.notes if n["section"]})
+                return (f"no notes found for {sec!r}; sections with notes: {'; '.join(have)}" if have
+                        else "no numbered notes found in this document; use locate")
+            return "\n".join(f"{no} {title} — p.{pr}" for no, title, pr in ns)
         if name == "read_pages":
             lo, hi = _int(a.get("from")), _int(a.get("to"))
             if lo is None:

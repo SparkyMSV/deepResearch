@@ -163,3 +163,17 @@ def test_record_from_table_row_and_column(env, monkeypatch):
     f = c.conn.execute("select value, unit, reported_period, quote from fields where name='Total Debt'").fetchone()
     assert tuple(f) == ("1,18,210.52", "₹ Mn", "As at March 31, 2026", "Adjusted net debt ... 1,18,210.52")
     assert "several rows match" in s.sent[3]["messages"][-1]["content"]
+
+
+def test_list_notes_tool(env, monkeypatch):
+    c, sub = env
+    ps = pages()
+    ps[12] = "Financial statements\n17 BORROWINGS\nTerm loans"
+    ps[13] = "19 CAPITAL MANAGEMENT\nNet debt table"
+    c.store = FakeStore({U: ps}, {U: TOC})
+    s = Script(Reply("", [call("list_notes", section="Financial statements")], 500),
+               Reply("", [call("list_notes", section="Nowhere")], 600), END)
+    run(env, s, monkeypatch)
+    assert "17 BORROWINGS — p.11" in s.sent[1]["messages"][-1]["content"]
+    assert "19 CAPITAL MANAGEMENT — p.12" in s.sent[1]["messages"][-1]["content"]
+    assert "Financial statements" in s.sent[2]["messages"][-1]["content"]  # lists the sections that have notes
