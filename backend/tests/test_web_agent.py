@@ -78,3 +78,10 @@ def test_not_helpful_remark_and_missing(env, monkeypatch):
     out = run(env, s, monkeypatch)
     assert web_agent.remark(c.search_history[0]) == "not helpful — opened [2], nothing recorded"
     assert "missing: [1] Total Debt" in out and sub["missing_web"]
+
+
+def test_web_prompt_is_research_minded():
+    import inspect
+    from app import web_agent
+    src = inspect.getsource(web_agent)
+    assert "short queries naming the entity, field and period" not in src and "researcher" in src

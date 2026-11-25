@@ -197,3 +197,18 @@ def test_failed_table_lookup_falls_back_to_the_quote(env, monkeypatch):
                                column="2026", page=12)], 1500), END)
     run(env, s, monkeypatch)
     assert env[0].conn.execute("select value from fields where name='Total Debt'").fetchone()[0] == "6,100"
+
+
+def test_thinks_on_the_first_turn_and_after_a_failure(env, monkeypatch):
+    s = Script(Reply("", [call("locate", query="total borrowings")], 500),
+               Reply("", [call("record_value", field=1, value="1", quote="not on any page read", page=12)], 600),
+               Reply("", [call("locate", query="borrowings note")], 700), END)
+    run(env, s, monkeypatch)
+    assert [x["think"] for x in s.sent] == [True, False, True, False]
+
+
+def test_prompt_is_research_minded_and_has_no_literal_query_example(env, monkeypatch):
+    s = Script(END)
+    run(env, s, monkeypatch)
+    sys = s.sent[0]["messages"][0]["content"]
+    assert "researcher" in sys.lower() and 'locate(query="total debt' not in sys.lower()

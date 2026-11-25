@@ -48,7 +48,7 @@ class Env:
 
     async def local(self, role, messages, tools=None, think=False, **kw):
         await asyncio.sleep(0)
-        if think:  # self-review
+        if think and not tools:  # self-review (agents also think, with tools)
             return ACCEPT
         r = MAIN[self.turn % len(MAIN)]
         self.turn += 1

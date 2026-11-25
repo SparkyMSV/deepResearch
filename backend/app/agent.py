@@ -54,13 +54,19 @@ def opening(ctx, sub) -> list[dict]:
     eg = docs[0]["key"] if docs else None
     first = next((i for i, f in enumerate(all_fields(ctx.conn, sub["id"]), 1) if f["status"] == "open"), 1)
     text = (
-        f"You lead research on: {sub['objective']}. {date_note(ctx.today)}\n"
-        "You don't read pages yourself. For each open field decide once where it most likely is and hand it over:\n"
-        + (f'- explore_document(doc="{eg}", fields=[{first}], goal="...") when a document likely holds it (annual '
-           "reports and results for financial figures, rating rationales for ratings);\n" if eg else "")
-        + f'- search_web(fields=[{first}], goal="...") when no document fits or a document didn\'t have it.\n'
+        f"You lead a piece of research: {sub['objective']}. {date_note(ctx.today)}\n"
+        "You are a researcher, not a lookup. For each open field first work out what it really asks: what the "
+        "figure or fact means, what sources call it (other names, abbreviations) and which kind of source publishes "
+        "it first-hand (a report, filing, paper, official statistics, a regulator, the organisation itself). Then "
+        "hand it over:\n"
+        + (f'- explore_document(doc="{eg}", fields=[{first}], goal="...") when one of the documents is such a '
+           "source;\n" if eg else "")
+        + f'- search_web(fields=[{first}], goal="...") when none is, or a document didn\'t have it.\n'
+        "Write each goal as a research brief: what the field means, its other names, and where in the source it "
+        "likely sits (section, table, note), not just the field's name. "
         "Prefer the document dated in the field's period; an older one only when no current one has the figure. "
-        "Group related fields in one hand-off. Read each report; try the other route for fields still missing. "
+        "Group related fields in one hand-off. Read each report; after a miss change the angle (another source, "
+        "section or wording) rather than repeating. "
         "mark_not_public only after both the web and (if any) a document were tried. Call done when every field is "
         "recorded or not public, or nothing more can be tried.\nFields:\n" + "\n".join(_field_lines(ctx.conn, sub))
         + "\nDocuments:\n" + "\n".join(doc_lines))

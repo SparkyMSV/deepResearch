@@ -34,13 +34,18 @@ def _parse(page: str) -> list[tuple[list[str], list[list[str]]]]:
     for t in _TABLE.findall(page):
         rows = [[norm(c) for attrs, c in _CELL.findall(r) for _ in range(_span(attrs))] for r in _ROW.findall(t)]
         rows = [r for r in rows if r]
-        # the first data row has a label and a number; a row of bare years ("", 2026, 2025) is a header
+        # the first data row has a label and a number after it; a row of bare years ("", 2026, 2025) is a header
         first = next((i for i, r in enumerate(rows)
-                      if any(ch.isalpha() for ch in r[0]) and any(_NUM.match(c) for c in r[1:])), len(rows))
+                      if (li := _label(r)) is not None and any(_NUM.match(c) for c in r[li + 1:])), len(rows))
         width = max(map(len, rows), default=0)
         heads = [" ".join(r[j] for r in rows[:first] if j < len(r) and r[j]) for j in range(width)]
         out.append((heads, rows[first:]))
     return out
+
+
+def _label(r: list[str]) -> int | None:
+    """Index of a row's label: its first cell with words (a serial-number column may come before it)."""
+    return next((i for i, c in enumerate(r) if sum(ch.isalpha() for ch in c) >= 2), None)
 
 
 def _words(s: str) -> set[str]:
@@ -52,22 +57,24 @@ def cell(page: str, row: str, column: str) -> Cell:
     if not tabs:
         return Cell(error="no table on this page; record with a quote instead")
     want = norm(row).lower()
-    rows = [(heads, r) for heads, rs in tabs for r in rs if r and r[0]]
-    exact = [x for x in rows if x[1][0].lower() == want]
-    hits = exact or [x for x in rows if want in x[1][0].lower()]
+    rows = [(heads, r, li) for heads, rs in tabs for r in rs if (li := _label(r)) is not None]
+    exact = [x for x in rows if x[1][x[2]].lower() == want]
+    hits = exact or [x for x in rows if want in x[1][x[2]].lower()]
     if not hits:
-        return Cell(error="no row labelled like that; rows: " + "; ".join(r[0] for _, r in rows[:12]))
-    if len({r[0] for _, r in hits}) > 1 or len({tuple(r) for _, r in hits}) > 1:
-        return Cell(error="several rows match; use the full label: " + "; ".join(r[0] for _, r in hits[:8]))
-    heads, r = hits[0]
-    shared = set.intersection(*[_words(h) for h in heads[1:] if h] or [set()])
+        return Cell(error="no row labelled like that; rows: " + "; ".join(r[li] for _, r, li in rows[:12]))
+    if len({r[li] for _, r, li in hits}) > 1 or len({tuple(r) for _, r, _ in hits}) > 1:
+        return Cell(error="several rows match; use the full label: " + "; ".join(r[li] for _, r, li in hits[:8]))
+    heads, r, li = hits[0]
+    label = r[li]
+    values = [h for j, h in enumerate(heads) if j > li and h]
+    shared = set.intersection(*[_words(h) for h in values] or [set()])
     q = (_words(column) - shared) or _words(column)  # "As at March 31, 2025": only "2025" tells columns apart
-    scores = [len(q & _words(h)) if j else 0 for j, h in enumerate(heads)]  # column 0 holds the labels
+    scores = [len(q & _words(h)) if j > li and r[j:j + 1] != [label] else 0 for j, h in enumerate(heads)]
     best = max(scores, default=0)
     cols = [j for j, s in enumerate(scores) if s == best and s]
     if len(cols) != 1:
-        return Cell(error="say which column: " + "; ".join(h for h in heads[1:] if h))
+        return Cell(error="say which column: " + "; ".join(values))
     j = cols[0]
     if j >= len(r) or not r[j]:
-        return Cell(error=f"the row {r[0]!r} has no value under {heads[j]!r}")
-    return Cell(value=r[j], row=r[0], column=heads[j], quote=f"{r[0]} ... {r[j]}")
+        return Cell(error=f"the row {label!r} has no value under {heads[j]!r}")
+    return Cell(value=r[j], row=label, column=heads[j], quote=f"{label} ... {r[j]}")

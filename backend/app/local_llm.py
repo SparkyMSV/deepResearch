@@ -81,6 +81,8 @@ async def _once(role: str, messages: list[dict], tools, max_tokens: int, think: 
     if on_token is None:
         r = await c.chat.completions.create(**kw)
         m = r.choices[0].message
+        if think and (why := getattr(m, "reasoning_content", None) or (getattr(m, "model_extra", None) or {}).get("reasoning_content")):
+            log.info("local %s thinking: %s", role, clip(why, 500))
         calls = [{"id": t.id, "name": t.function.name, "args": _args(t.function.arguments)} for t in m.tool_calls or []]
         return Reply(m.content or "", calls, getattr(r.usage, "prompt_tokens", 0) or 0)
     out, used = [], 0

@@ -141,10 +141,14 @@ async def search(ctx, sub, field_nos: list[int], goal: str, on_round) -> str:
 
     objective = "\n".join(f"[{n}] {f['name']} — {f['entity'] or 'any'}, {f['period']}"
                           + (f" — hint: {f['hint']}" if f["hint"] else "") for n, f in fields)
-    system = (f"You search the web for specific figures. {date_note(ctx.today)}\nObjective: {goal}\nFields:\n"
-              f"{objective}\nSearch history of this research (don't repeat queries; learn from the remarks):\n"
-              f"{_history(ctx)}\nHow to work: short queries naming the entity, field and period; open the most "
-              "promising links; record_value with a quote copied from the page; call report when done or stuck.")
+    system = (f"You are a researcher finding facts on the web. {date_note(ctx.today)}\nObjective: {goal}\n"
+              f"Fields:\n{objective}\nSearch history of this research (don't repeat queries; learn from the "
+              f"remarks):\n{_history(ctx)}\nHow to work: first think what each field means, who publishes it "
+              "first-hand (the organisation itself, a regulator, official statistics, a paper, a reputable data or "
+              "news site) and what they call it; search for that source or wording. Open the most promising links "
+              "(snippets and URLs tell you a lot); record_value with a quote copied from the page. When a search "
+              "doesn't help, change the angle (another source, other names for the field, the broader topic it "
+              "belongs to) instead of rewording the same query. Call report when done or stuck.")
     msgs = [{"role": "system", "content": system}, {"role": "user", "content": "Begin."}]
 
     def compact(m: list[dict]) -> list[dict]:

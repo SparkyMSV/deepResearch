@@ -9,7 +9,9 @@ from app.logs import clip
 
 log = logging.getLogger(__name__)
 
-MAX_CALLS_PER_TURN, REPLY_TOKENS = 3, 1000
+MAX_CALLS_PER_TURN, REPLY_TOKENS, THINK_TOKENS = 3, 1000, 4000
+# a tool result that means the last attempt failed: think before the next one
+FAILED = ("rejected", "error", "no ", "already tried", "skipped")
 NUDGE = "Use a tool."
 
 
@@ -37,6 +39,7 @@ async def loop(ctx, sub, msgs: list[dict], tools: list[dict], handle, max_steps:
     handle(name, args) -> result text. compact(msgs) -> shorter msgs for the same task."""
     paused, wait = pauser(ctx, sub)
     steps = idle = tokens = sent = errors = 0
+    think = True  # plan on the first turn
     while True:
         if stop and stop():
             return "closed", None
@@ -49,7 +52,8 @@ async def loop(ctx, sub, msgs: list[dict], tools: list[dict], handle, max_steps:
             msgs[:] = compact(msgs)
         sent = len(msgs)
         try:
-            r = await local("research", msgs, tools=tools, max_tokens=REPLY_TOKENS, on_wait=wait)
+            r = await local("research", msgs, tools=tools, max_tokens=THINK_TOKENS if think else REPLY_TOKENS,
+                            think=think, on_wait=wait)
             errors = 0
         except LocalModelError as e:  # e.g. prompt over the context window: compact once, then give up
             errors += 1
@@ -69,7 +73,7 @@ async def loop(ctx, sub, msgs: list[dict], tools: list[dict], handle, max_steps:
                 return "stalled", None
             msgs += [{"role": "assistant", "content": r.content or ""}, {"role": "user", "content": NUDGE}]
             continue
-        idle = 0
+        idle, think = 0, False
         msgs.append({"role": "assistant", "content": r.content or "", "tool_calls": [
             {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["args"])}}
             for c in r.tool_calls]})
@@ -93,6 +97,7 @@ async def loop(ctx, sub, msgs: list[dict], tools: list[dict], handle, max_steps:
                 steps += 1
                 if c["name"] in finish and done is None:
                     done = c["args"]
+            think = think or result.startswith(FAILED) or "recorded: nothing" in result
             log.info("tool %s %s -> %s", c["name"], clip(json.dumps(c["args"], ensure_ascii=False), 300), clip(result, 200))
             msgs.append({"role": "tool", "tool_call_id": c["id"], "content": result})
         if done is not None:

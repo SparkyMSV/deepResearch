@@ -65,3 +65,16 @@ def test_same_label_with_different_values_is_ambiguous():
 
 def test_grouping_ignored_only_inside_numbers():
     assert _why_not("34", "Notes 34 and 5 apply", norm("Notes 3,4 and 5 apply")) is not None
+
+
+SERIAL = ("<table><tr><th>Sr. No.</th><th colspan=\"2\">Particulars</th><th>As at March 31, 2026</th>"
+          "<th>As at March 31, 2025</th></tr>"
+          "<tr><td>16</td><td></td><td>Debt-equity ratio (in times) (refer note b)</td><td>0.83</td><td>0.68</td></tr>"
+          "<tr><td>18</td><td colspan=\"2\">Interest service coverage ratio (in times) (refer note d)</td><td>3.17</td>"
+          "<td>3.68</td></tr></table>")
+
+
+def test_rows_with_a_serial_number_column():
+    assert tables.cell(SERIAL, "Debt-equity ratio", "March 31, 2026").value == "0.83"
+    c = tables.cell(SERIAL, "Interest service coverage ratio", "2025")
+    assert (c.value, c.row) == ("3.68", "Interest service coverage ratio (in times) (refer note d)")

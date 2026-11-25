@@ -54,19 +54,19 @@ def _prompt(ctx, doc, prep, fields: list[tuple[int, dict]], goal: str) -> str:
                                                                 if e["title"] in noted else "")
                          for e in prep.contents) or \
         "  (no contents page: use locate)"
-    eg_field = fields[0][1]["name"].lower() if fields else "revenue"
     lines = "\n".join(f"[{n}] {f['name']} — {f['entity'] or 'any'}, {f['period']}"
                       + (f" — hint: {f['hint']}" if f["hint"] else "") for n, f in fields)
     return (
-        f"You find figures in one document. {date_note(ctx.today)}\nGoal: {goal}\n"
+        f"You are a researcher working through one document. {date_note(ctx.today)}\nGoal: {goal}\n"
         f"Document {doc['key']}: {doc['about'] or doc['name']} ({prep.pages} pages)"
         + (f"; {doc['notes']}" if doc.get("notes") else "") + f"\nContents (printed page numbers):\n{contents}\n"
         f"Fields to find:\n{lines}\n"
-        "How to work: find the page, then read it. For a figure in financial statements, list_notes of that "
-        "section and pick the note (e.g. borrowings, capital management); otherwise call locate with the field's words "
-        f'(e.g. locate(query="{eg_field} {fields[0][1]["period"] if fields else ""}")), read the best pages in full '
-        "with read_pages, then record_value with its printed page number and, for a table, the row and column (else a quote). "
-        "Only values for the field's entity and period. Don't page through the document blindly. "
+        "How to work: first think what each field means, what this document would call it (its own wording or "
+        "abbreviation) and which part would hold it (a contents section, then a numbered note or table). Narrow "
+        "down: list_notes for a section with numbered notes, or locate with the words the document itself would "
+        "use; read the best pages in full with read_pages; record_value with the printed page and, for a table, the "
+        "row and column (else a quote). After a miss try the document's own wording or another section, not the "
+        "same words again. Only values for the field's entity and period. Don't page through the document blindly. "
         "When done, or when the values aren't in this document, call report.")
 
 
