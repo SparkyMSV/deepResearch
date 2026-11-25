@@ -227,18 +227,3 @@ def test_ddg_uses_backends_and_falls_back(monkeypatch):
     monkeypatch.setattr(search.config, "SEARCH_BACKENDS", "yahoo,bing")
     assert search.ddg("q", 20) == [Hit("T", "http://a", "B")]
     assert calls == [("yahoo,bing", 20), ("auto", 20)]
-
-
-def test_doc_score_prefers_the_exact_financial_year():
-    words = {"mindspace"}
-    old = Hit("Mindspace AR", "https://www.mindspacereit.com/wp-content/uploads/2025/06/Mindspace-Business-Parks-REIT-Annual-Report-2024-25.pdf", "")
-    new = Hit("Mindspace AR", "https://www.mindspacereit.com/wp-content/uploads/2026/06/Mindspace-Business-Parks-REIT-Annual-Report-2025-26.pdf", "")
-    d = ["mindspacereit.com"]
-    assert search.doc_score(new, words, "FY2025-26", d) > search.doc_score(old, words, "FY2025-26", d)
-
-
-def test_upload_path_dates_are_not_financial_years():
-    words = {"mindspace"}
-    plain = Hit("Mindspace annual report", "https://www.mindspacereit.com/wp-content/uploads/2026/06/annual-report.pdf", "")
-    assert search.doc_score(plain, words, "FY2025-26", []) >= search.doc_score(
-        Hit("Mindspace annual report", "https://x.org/annual-report.pdf", ""), words, "FY2025-26", [])

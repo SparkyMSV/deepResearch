@@ -116,15 +116,6 @@ def doc_score(hit: Hit, words: set[str], period: str, domains: list[str]) -> int
         score += 2
     elif any(y not in ys for y in re.findall(r"20\d\d", f"{hit.url} {hit.title}")):
         score -= 2  # names another year and not ours
-    # a financial year is told apart by its pair ("2025-26"): "2024-25" also contains 2025 but is another year
-    if (ours := re.search(r"(20\d\d)\s*[-/]\s*(\d\d)", (period or "").lower())):
-        mine = (ours.group(1)[2:], ours.group(2))
-        pairs = {(a[-2:], b) for a, b in re.findall(r"(?<!\d)(20\d\d|\d\d)\s*[-_/]\s*(\d\d)(?!\d)", t)
-                 if (int(a[-2:]) + 1) % 100 == int(b)}  # consecutive years only: not upload paths like 2026/06
-        if mine in pairs:
-            score += 2
-        elif pairs:
-            score -= 3
     host = urlparse(hit.url).netloc.lower()
     if any(host == d or host.endswith("." + d) for d in domains):
         score += 1
