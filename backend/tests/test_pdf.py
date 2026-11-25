@@ -104,3 +104,10 @@ def test_norm_straightens_quotes():
 def test_norm_strips_html_table_tags():
     html = "<table><tr><td>Revenue from operations</td><td>24</td><td>2,110,127</td></tr></table>"
     assert pdf.norm(html) == "Revenue from operations 24 2,110,127"
+
+
+def test_text_layer_reads_every_page_without_ocr(store, monkeypatch):
+    real = pdf._ocr
+    monkeypatch.setattr(pdf, "_ocr", lambda path, n: real(path, n) if n == 0 else (_ for _ in ()).throw(AssertionError("OCR")))
+    layer = asyncio.run(store.text_layer(URL))
+    assert len(layer) == 12 and "Asset quality improved" in layer[6]

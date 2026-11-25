@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 
+from app import docprep
 from app.db import insert
 from app.local_llm import WORK, parse_json, qwen
 from app.logs import clip
@@ -106,10 +107,24 @@ async def find_document(ctx, doc: dict) -> None:
         r = await verify(ctx, h.url, expect)
         if r:
             ctx.set_doc(doc, status="verified", url=h.url, **r)
+            await _prepare(ctx, doc)
             log.info("document %s verified: %s (%s)", doc["key"], h.url, r["about"])
             return
     ctx.set_doc(doc, status="not_found")
     log.info("document %s not found (%d candidates checked)", doc["key"], min(len(keep), MAX_CANDIDATES))
+
+
+async def _prepare(ctx, doc: dict) -> None:
+    """Contents, page offsets and page index for the PDF agent; stored on the document row."""
+    try:
+        p = await docprep.prepare(ctx.store, doc["url"])
+    except Exception as e:  # preparation is a help, not a requirement
+        log.warning("preparing %s failed: %r", doc["key"], e)
+        return
+    notes = ([f"{p.scanned} scanned pages not indexed"] if p.scanned else []) + \
+        ([] if p.offset_ok else ["page offset unverified"])
+    ctx.set_doc(doc, pages=p.pages, offset_ok=int(p.offset_ok), notes="; ".join(notes),
+                contents=json.dumps([{"title": e["title"], "printed": e["printed"]} for e in p.contents]))
 
 
 async def add_found_pdf(ctx, url: str, field: dict) -> dict | None:
@@ -129,5 +144,6 @@ async def add_found_pdf(ctx, url: str, field: dict) -> dict | None:
                  issuer=field["entity"], type="any", period=field["period"], status="planned")
     row = dict(ctx.conn.execute("select * from documents where id=?", (did,)).fetchone())
     ctx.set_doc(row, status="verified", url=url, **r)
+    await _prepare(ctx, row)
     log.info("web PDF %s shared as %s (%s)", url, row["key"], r["about"])
     return row

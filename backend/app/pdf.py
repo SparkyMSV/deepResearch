@@ -20,7 +20,7 @@ from app.search import _HEADERS
 log = logging.getLogger(__name__)
 
 MAX_BYTES = 50_000_000
-HEAD_PAGES = 8  # contents are looked for in these
+HEAD_PAGES = 12  # contents are looked for in these
 MAX_ENTRIES, RAW_LINES, LOCATE_SPAN = 60, 40, 15
 _conv = None
 _lock = threading.Lock()  # converter/pdfium are not assumed thread-safe
@@ -66,6 +66,15 @@ def norm(s: str) -> str:
     s = re.sub(r"(\w)-\n(\w)", r"\1\2", s)  # words hyphenated across a line break
     s = re.sub(r"(?m)^\s*[-:| ]{3,}\s*$", " ", s)  # markdown table rule lines
     return " ".join(s.translate(_QUOTES).split())
+
+
+def _layer(path: str) -> dict[int, str]:
+    with _lock:
+        doc = pdfium.PdfDocument(path)
+        try:
+            return {i + 1: doc[i].get_textpage().get_text_range() for i in range(len(doc))}
+        finally:
+            doc.close()
 
 
 class Contents(NamedTuple):
@@ -137,6 +146,14 @@ class PdfStore:
         """Pages mentioning each term, from the PDF's text layer (fast; no OCR)."""
         await self.pages(url)
         return await asyncio.to_thread(_scan, self._files[url], [t.lower() for t in terms if t])
+
+    async def text_layer(self, url: str) -> dict[int, str]:
+        """Every page's built-in text (no OCR; empty for scanned pages), cached per document."""
+        cache = self.__dict__.setdefault("_layers", {})
+        if url not in cache:
+            await self.pages(url)
+            cache[url] = await asyncio.to_thread(_layer, self._files[url])
+        return cache[url]
 
     def close(self) -> None:
         for path in self._files.values():

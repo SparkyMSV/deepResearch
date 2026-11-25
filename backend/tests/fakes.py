@@ -19,6 +19,10 @@ class FakeStore:
         self.reads.append((url, n))
         return self.docs[url][n - 1]
 
+    async def text_layer(self, url):
+        await self.pages(url)
+        return {} if url in getattr(self, "scanned", set()) else {i: t for i, t in enumerate(self.docs[url], 1)}
+
     async def contents(self, url):
         entries = self.toc.get(url, [])
         return Contents(entries, "" if len(entries) >= 5 else "\n".join(self.docs[url][0].splitlines()[:40]))
