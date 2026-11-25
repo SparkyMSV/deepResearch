@@ -93,6 +93,10 @@ isn't a setting yet. Expect the plan to need a capable model: it decides what "d
   context-window choices.
 - **Retrieval inside documents**: embedding search next to BM25 for `locate` (costs memory on a 24 GB Mac).
 - **Fully local option** as a setting.
+- **Research-minded prompts**: agents should first work out what the task means and where such figures are
+  found (which source, then which part: section → note → table), narrowing step by step, instead of searching
+  field names. For "market viability of a product", search the higher meaning (market size, demand,
+  competitors, pricing), not the product name.
 
 ## Prerequisites
 - macOS on Apple Silicon (tested on an M4 Pro, 24 GB)
