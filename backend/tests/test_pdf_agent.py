@@ -246,3 +246,10 @@ def test_new_call_on_a_document_sees_earlier_calls(env, monkeypatch):
     run(env, s2, monkeypatch)
     sys = s2.sent[0]["messages"][0]["content"]
     assert "Earlier on this document" in sys and "12" in sys and "try the notes" in sys
+
+
+def test_prompt_uses_the_contents_to_judge_locate_hits(env, monkeypatch):
+    s = Script(END)
+    run(env, s, monkeypatch)
+    sys = s.sent[0]["messages"][0]["content"]
+    assert "contents above" in sys and "false positive" in sys
