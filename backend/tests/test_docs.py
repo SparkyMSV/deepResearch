@@ -160,3 +160,12 @@ def test_found_pdf_is_prepared_in_the_background(monkeypatch):
         return d
 
     assert asyncio.run(go())["key"] == "D1" and started == ["D1"]
+
+
+def test_verify_records_the_period_the_document_covers(monkeypatch):
+    store = FakeStore({NAVI: ["ICRA rating rationale, Navi Finserv Limited, April 2025 " * 20]})
+    q = ScriptedQwen(("dated", {"match": True, "about": "ICRA rationale", "dated": "April 2025"}))
+    c, _ = make(monkeypatch, store, q)
+    r = asyncio.run(docs.verify(c, NAVI, {"issuer": "Navi Finserv Limited", "type": "rating rationale",
+                                          "period": "FY2025-26"}))
+    assert r["period"] == "April 2025"

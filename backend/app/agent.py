@@ -47,7 +47,8 @@ def _field_lines(conn, sub) -> list[str]:
 def opening(ctx, sub) -> list[dict]:
     """Fixed start of the main agent's requests (the server reuses it)."""
     docs = ctx.docs()
-    doc_lines = [f"{d['key']} {d['about'] or d['name']} — covers {d['covers'] or '?'} — {d['pages'] or '?'} pages"
+    doc_lines = [f"{d['key']} {d['about'] or d['name']}" + (f" — dated {d['period']}" if d.get("period") else "")
+                 + f" — covers {d['covers'] or '?'} — {d['pages'] or '?'} pages"
                  + (" — has a contents page" if d.get("contents") not in (None, "", "[]") else "")
                  for d in docs] or ["none yet"]
     eg = docs[0]["key"] if docs else None
@@ -58,6 +59,7 @@ def opening(ctx, sub) -> list[dict]:
         + (f'- explore_document(doc="{eg}", fields=[{first}], goal="...") when a document likely holds it (annual '
            "reports and results for financial figures, rating rationales for ratings);\n" if eg else "")
         + f'- search_web(fields=[{first}], goal="...") when no document fits or a document didn\'t have it.\n'
+        "Prefer the document dated in the field's period; an older one only when no current one has the figure. "
         "Group related fields in one hand-off. Read each report; try the other route for fields still missing. "
         "mark_not_public only after both the web and (if any) a document were tried. Call done when every field is "
         "recorded or not public, or nothing more can be tried.\nFields:\n" + "\n".join(_field_lines(ctx.conn, sub))

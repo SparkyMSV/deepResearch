@@ -189,3 +189,10 @@ def test_reopening_a_field_clears_who_looked(env, monkeypatch):
     monkeypatch.setattr(agent, "local", Script(review((1, "retry", "check notes"))))
     asyncio.run(agent.self_review(c, sub))
     assert fid not in sub["missing_web"] and fid not in sub["missing_pdf"]
+
+
+def test_opening_shows_document_dates_and_prefers_the_fields_period(env):
+    c, sub, _, _ = env
+    c.set_doc(c.docs()[0], period="April 2025")
+    sys = agent.opening(c, sub)[0]["content"]
+    assert "dated April 2025" in sys and "field's period" in sys

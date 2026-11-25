@@ -60,7 +60,8 @@ async def _verify(ctx, url: str, expect: dict, about_entity: bool) -> dict | Non
     d = await _ask(f"Start of a PDF ({n} pages):\n{text[:DESCRIBE_CHARS + 1500]}\n\n{ask} The first page may be a "
                    "cover letter or a filing intimation to a stock exchange; judge and describe the document it "
                    "encloses. Reply JSON only: "
-                   '{"match":true|false,"about":"what it is, at most 12 words","covers":"main contents, at most 12 words"}',
+                   '{"match":true|false,"about":"what it is, at most 12 words","covers":"main contents, at most 12 words",'
+                   '"dated":"the date or period it reports on, e.g. FY2025-26 or April 2025"}',
                    on_wait=lambda reason: ctx.post(
                        "The Mac is short of memory, so research is paused until it frees up." if reason == "memory"
                        else "The local research model (MTPLX) isn't answering; research is paused until it is running."))
@@ -68,7 +69,10 @@ async def _verify(ctx, url: str, expect: dict, about_entity: bool) -> dict | Non
         log.info("verify %s: no match", url)
         return None
     log.info("verify %s: match (%s)", url, d.get("about"))
-    return {"about": str(d.get("about") or url.rsplit("/", 1)[-1]), "covers": str(d.get("covers") or ""), "pages": n}
+    out = {"about": str(d.get("about") or url.rsplit("/", 1)[-1]), "covers": str(d.get("covers") or ""), "pages": n}
+    if str(d.get("dated") or "").strip():  # what it actually covers, not what the plan hoped for
+        out["period"] = str(d["dated"]).strip()
+    return out
 
 
 async def verify(ctx, url: str, expect: dict, about_entity: bool = False) -> dict | None:
