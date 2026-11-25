@@ -78,3 +78,20 @@ def cell(page: str, row: str, column: str) -> Cell:
     if j >= len(r) or not r[j]:
         return Cell(error=f"the row {label!r} has no value under {heads[j]!r}")
     return Cell(value=r[j], row=label, column=heads[j], quote=f"{label} ... {r[j]}")
+
+
+def row_value(page: str, label: str, value: str) -> Cell:
+    """The agent names a row and gives its number: the row with that label must hold that number on the page."""
+    want, digits = norm(label).lower(), re.sub(r"[^\d.]", "", value)
+    if not want or not digits:
+        return Cell(error="no label or value")
+    for heads, rs in _parse(page):
+        for r in rs:
+            li = _label(r)
+            if li is None or not (want in r[li].lower() or r[li].lower() in want):
+                continue
+            for j in range(li + 1, len(r)):
+                if r[j] and re.sub(r"[^\d.]", "", r[j]) == digits:
+                    return Cell(value=r[j], row=r[li], column=heads[j] if j < len(heads) else "",
+                                quote=f"{r[li]} ... {r[j]}")
+    return Cell(error=f"no row labelled like {label!r} holds {value} on this page")

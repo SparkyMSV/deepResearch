@@ -85,6 +85,7 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
     shown: set[int] = set()  # pages whose text is still in the conversation (compaction removes it)
     cap = PAGE_CHARS * (2 if prep.spread else 1)  # a spread page holds two printed pages
     recorded: list[str] = []
+    tried: list[str] = []  # rejected recordings, for the main agent: the value may be right and worth a retry
 
     async def handle(name: str, a: dict) -> str:
         if name == "locate":
@@ -166,11 +167,19 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
             src = {"url": doc["url"], "title": doc["name"], "key": doc["key"], "page": pdf, "kind": "doc",
                    "text": read[pdf]["text"]}
             value, period, quote = str(a.get("value") or ""), str(a.get("period") or ""), str(a.get("quote") or "")
-            if a.get("row"):  # the harness reads the number, so it can't be mistyped
+            # a row label (given as row, column or quote) plus the value: check that row holds it, quote it
+            labels = [str(a[k]) for k in ("row", "column", "quote") if a.get(k)]
+            hit = next((c for lb in labels if value and not (c := tables.row_value(read[pdf]["text"], lb, value)).error),
+                       None)
+            if hit:
+                value, period, quote = hit.value, period or hit.column, hit.quote
+            elif a.get("row"):  # the harness reads the number, so it can't be mistyped
                 c = tables.cell(read[pdf]["text"], str(a["row"]), str(a.get("column") or ""))
                 if c.error and not quote:
-                    on_round(f"rejected: {c.error}"[:80], 0)
-                    return f"rejected: {c.error}"
+                    why = tables.row_value(read[pdf]["text"], str(a["row"]), value).error if value else c.error
+                    on_round(f"rejected: {why}"[:80], 0)
+                    tried.append(f"[{n}] {value or '?'} (p.{p}): rejected: {why}")
+                    return f"rejected: {why}"
                 if not c.error:
                     value, period, quote = c.value, period or c.column, c.quote
             out = record(ctx, sub, n, value, str(a.get("unit") or ""), period, quote, src)
@@ -182,6 +191,7 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
                 on_round(out.split(" (", 1)[0].replace(f"[{n}] ", ""), 0)
             else:
                 on_round(out[:80], 0)
+                tried.append(f"[{n}] {value or '?'} (p.{p}): {out}")
             return out
         if name == "report":
             return "ok"
@@ -218,6 +228,7 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
     report = (f"PDF agent on {doc['key']}{ended}: recorded: {', '.join(recorded) or 'nothing'}; missing: "
               + (", ".join(f"[{n}] {f['name']}" for n, f in missing) or "none")
               + (f"; notes: {notes}" if notes else "")
-              + f"; pages read: {', '.join(str(v['printed']) for v in read.values()) or 'none'}")
+              + f"; pages read: {', '.join(str(v['printed']) for v in read.values()) or 'none'}"
+              + (f"; tried: {'; '.join(clip(t, 140) for t in tried[-3:])}" if tried else ""))
     log.info("%s", report)
     return report

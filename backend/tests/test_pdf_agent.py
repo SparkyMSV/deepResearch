@@ -266,3 +266,51 @@ def test_plan_kept_when_the_model_answers_only_in_its_thinking(env, monkeypatch)
         return await s(role, messages, tools, max_tokens, think, on_token, on_wait, max_wait)
     run(env, thinker, monkeypatch)
     assert "debt covenants note" in str(s.sent[0]["messages"])
+
+
+def _serial_page(env):
+    from tests.test_tables import SERIAL
+    c, sub = env
+    ps = pages()
+    ps[13] = SERIAL
+    c.store = FakeStore({U: ps}, {U: TOC})
+
+
+def test_record_with_label_and_value_however_the_label_is_given(env, monkeypatch):
+    _serial_page(env)
+    s = Script(Reply("", [call("read_pages", **{"from": 12, "to": 12})], 900),
+               Reply("", [call("record_value", field=1, value="3.17", page=12,
+                               quote="Interest service coverage ratio (in times)"),           # label as the quote
+                          call("record_value", 1, field=2, value="0.83", page=12,
+                               column="Debt-equity ratio (in times) (refer note b)")], 1500),  # label as the column
+               END)
+    run(env, s, monkeypatch)
+    rows = env[0].conn.execute("select name, value, quote from fields order by id").fetchall()
+    assert [tuple(r) for r in rows] == [
+        ("Total Debt", "3.17", "Interest service coverage ratio (in times) (refer note d) ... 3.17"),
+        ("Gross NPA %", "0.83", "Debt-equity ratio (in times) (refer note b) ... 0.83")]
+
+
+def test_label_and_a_value_not_in_that_row_is_rejected(env, monkeypatch):
+    _serial_page(env)
+    s = Script(Reply("", [call("read_pages", **{"from": 12, "to": 12})], 900),
+               Reply("", [call("record_value", field=1, value="9.99", page=12, row="Interest service coverage ratio")],
+                     1500), END)
+    out, _ = run(env, s, monkeypatch)
+    assert env[0].conn.execute("select status from fields where name='Total Debt'").fetchone()[0] == "open"
+    assert "tried: [1] 9.99 (p.12)" in out and "rejected" in out
+
+
+def test_mtplx_no_tools_notice_is_not_a_plan(env, monkeypatch):
+    from app import agentkit as ak
+    s = Script(END)
+
+    async def notice(role, messages, tools=None, max_tokens=800, think=False, on_token=None, on_wait=None,
+                     max_wait=None):
+        if messages[-1]["content"] == ak.PLAN_ASK:
+            return Reply('[MTPLX: this reply tried to call "locate", but no tools are active on this request]', [], 10,
+                         reasoning="Start with the ratios note.")
+        return await s(role, messages, tools, max_tokens, think, on_token, on_wait, max_wait)
+    run(env, notice, monkeypatch)
+    sent = str(s.sent[0]["messages"])
+    assert "MTPLX" not in sent and "ratios note" in sent

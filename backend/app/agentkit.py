@@ -2,6 +2,7 @@
 for text-only replies, server-error recovery and compaction before the context window fills."""
 import json
 import logging
+import re
 
 from app import config
 from app.local_llm import LocalModelError, local
@@ -63,7 +64,8 @@ async def loop(ctx, sub, msgs: list[dict], tools: list[dict], handle, max_steps:
             try:
                 p = await local("research", msgs + [{"role": "user", "content": ask}], max_tokens=THINK_TOKENS,
                                 think=True, on_wait=wait)
-                if (plan := (p.content or "").strip() or clip(p.reasoning, 1500)):  # some models answer only in thought
+                said = re.sub(r"\[MTPLX:[^\]]*\]", "", p.content or "").strip()  # its "no tools here" notice
+                if (plan := said or clip(p.reasoning, 1500)):  # some models answer only in their thinking
                     log.info("plan: %s", clip(plan, 500))
                     msgs += [{"role": "user", "content": ask}, {"role": "assistant", "content": plan},
                              {"role": "user", "content": GO}]
