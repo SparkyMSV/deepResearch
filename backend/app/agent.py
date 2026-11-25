@@ -170,6 +170,8 @@ async def self_review(ctx, sub) -> str:
     paused, wait = agentkit.pauser(ctx, sub)
     try:
         r = await local("research", msgs, think=True, max_tokens=4000, on_wait=wait)
+        if not (r.content or "").strip():  # all of it went on thinking (small models): answer without thinking
+            r = await local("research", msgs, max_tokens=1500, on_wait=wait)
     except LocalModelError as e:
         log.warning("self-review failed: %s", e)
         return "ok"

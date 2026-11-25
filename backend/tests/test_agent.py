@@ -202,3 +202,13 @@ def test_reviews_judge_substance_not_format():
     from app import final
     for p in (agent.REVIEW_PROMPT, final.FINAL_PROMPT):
         assert "sign" in p and "rounding" in p
+
+
+def test_empty_review_after_thinking_is_retried_without_thinking(env, monkeypatch):
+    c, sub, _, _ = env
+    c.conn.execute("update fields set status='found', value='2.1', quote='q', source_kind='doc', source_key='D1', page=3")
+    s = Script(Reply("", [], 10), Reply('{"fields":[{"field":1,"action":"accept"}]}', [], 10))
+    monkeypatch.setattr(agent, "local", s)
+    asyncio.run(agent.self_review(c, sub))
+    assert [x["think"] for x in s.sent] == [True, False]
+    assert c.conn.execute("select accepted from fields order by id").fetchone()[0] == 1
