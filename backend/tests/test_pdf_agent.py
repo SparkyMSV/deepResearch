@@ -212,3 +212,33 @@ def test_prompt_is_research_minded_and_has_no_literal_query_example(env, monkeyp
     run(env, s, monkeypatch)
     sys = s.sent[0]["messages"][0]["content"]
     assert "researcher" in sys.lower() and 'locate(query="total debt' not in sys.lower()
+
+
+def test_page_removed_by_compaction_is_shown_again(env, monkeypatch):
+    monkeypatch.setattr(config, "CONTEXT_TOKENS", 400)
+    c, _ = env
+    c.store.docs[U][13] = ("x " * 1500) + Q
+    s = Script(Reply("", [call("read_pages", **{"from": 12, "to": 12})], 900),
+               Reply("", [call("read_pages", 1, **{"from": 13, "to": 13})], 900),
+               Reply("", [call("read_pages", 2, **{"from": 12, "to": 12})], 900), END)
+    run(env, s, monkeypatch)
+    again = s.sent[3]["messages"][-1]["content"]
+    assert "[page 12]" in again and "6,100 crore" in again
+    assert c.pages_used == 2  # shown again, not read again
+
+
+def test_capped_read_says_where_to_continue(env, monkeypatch):
+    s = Script(Reply("", [call("read_pages", **{"from": 5, "to": 9})], 500), END)
+    run(env, s, monkeypatch)
+    assert "next: read_pages(from=7" in s.sent[1]["messages"][-1]["content"]
+
+
+def test_new_call_on_a_document_sees_earlier_calls(env, monkeypatch):
+    c, sub = env
+    s1 = Script(Reply("", [call("read_pages", **{"from": 12, "to": 12})], 900),
+                Reply("", [call("report", notes="ratios table not on p.12; try the notes")], 10))
+    run(env, s1, monkeypatch)
+    s2 = Script(END)
+    run(env, s2, monkeypatch)
+    sys = s2.sent[0]["messages"][0]["content"]
+    assert "Earlier on this document" in sys and "12" in sys and "try the notes" in sys

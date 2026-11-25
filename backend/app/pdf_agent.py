@@ -80,7 +80,9 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
     fields = [(n, rows[n - 1]) for n in field_nos if isinstance(n, int) and 1 <= n <= len(rows)]
     if not fields:
         return "error: no valid fields to look for"
-    read: dict[int, dict] = {}  # PDF page -> {"printed","text"} read in this call (quotes are checked against these)
+    read: dict[int, dict] = {}  # PDF page -> {"printed","text","label"} read in this call (quotes checked against these)
+    shown: set[int] = set()  # pages whose text is still in the conversation (compaction removes it)
+    cap = PAGE_CHARS * (2 if prep.spread else 1)  # a spread page holds two printed pages
     recorded: list[str] = []
 
     async def handle(name: str, a: dict) -> str:
@@ -107,7 +109,8 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
             lo, hi = _int(a.get("from")), _int(a.get("to"))
             if lo is None:
                 return "error: read_pages needs printed page numbers"
-            hi = lo if hi is None or hi < lo else min(hi, lo + PAGES_PER_CALL - 1)
+            asked = lo if hi is None or hi < lo else hi
+            hi = min(asked, lo + PAGES_PER_CALL - 1)
             out, pages, now = [], 0, set()
             for p in range(lo, hi + 1):
                 try:
@@ -120,22 +123,30 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
                     continue
                 if pdf in now:  # spreads: both printed pages are on this PDF page
                     continue
-                if pdf in read:
+                if pdf in read and pdf in shown:
                     out.append(f"already read page {p} in this call; its text is above")
+                    continue
+                if pdf in read:  # its text was removed to save space: show it again (no new page read)
+                    shown.add(pdf)
+                    now.add(pdf)
+                    out.append(f"[{read[pdf]['label']}] (shown again)\n{read[pdf]['text'][:cap]}")
                     continue
                 if not ctx.pages_left():
                     out.append("Page budget used up; record what you have and call report.")
                     break
                 full = await ctx.store.text(doc["url"], pdf)  # kept whole for table lookups and quote checks
-                text = full[:PAGE_CHARS * (2 if prep.spread else 1)]
+                text = full[:cap]
                 pp = docprep.to_printed(prep, pdf)
                 label = f"pages {pp}-{pp + 1}" if prep.spread and pp and pp % 2 == 0 else f"page {p}"
                 read[pdf] = {"printed": p, "text": full, "label": label}
                 now.add(pdf)
+                shown.add(pdf)
                 sub["read"].setdefault(doc["key"], set()).add(pdf)
                 ctx.pages_used += 1
                 pages += 1
                 out.append(f"[{label}]\n{text.strip() or '(no text on this page)'}")
+            if asked > hi:
+                out.append(f"(at most {PAGES_PER_CALL} pages per call; next: read_pages(from={hi + 1}, to={asked}))")
             if pages:
                 on_round(f"{doc['key']} {page_ranges([v['printed'] for v in read.values() if lo <= v['printed'] <= hi])}",
                          pages)
@@ -180,11 +191,16 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
         tool_ids = {tc["id"]: tc["function"]["name"] for m in msgs for tc in m.get("tool_calls") or []}
         reads = [i for i, m in enumerate(msgs) if m.get("role") == "tool" and tool_ids.get(m["tool_call_id"]) == "read_pages"]
         for i in reads[:-1]:
-            labels = [v["label"] for v in read.values() if f"[{v['label']}]" in msgs[i]["content"]]
+            gone = [k for k, v in read.items() if f"[{v['label']}]" in msgs[i]["content"]]
+            shown.difference_update(gone)
+            labels = [read[k]["label"] for k in gone]
             msgs[i] = {**msgs[i], "content": "; ".join(REMOVED.format(lb) for lb in labels) or "[text removed]"}
         return msgs
 
-    msgs = [{"role": "system", "content": _prompt(ctx, doc, prep, fields, goal)}, {"role": "user", "content": "Begin."}]
+    earlier = sub.setdefault("pdf_calls", {}).setdefault(doc["key"], [])
+    system = _prompt(ctx, doc, prep, fields, goal) + (
+        "\nEarlier on this document (don't repeat what didn't work):\n" + "\n".join(earlier[-3:]) if earlier else "")
+    msgs = [{"role": "system", "content": system}, {"role": "user", "content": "Begin."}]
     why, args = await agentkit.loop(ctx, sub, msgs, PDF_TOOLS, handle, config.PDF_STEPS, compact, ("report",))
     now = all_fields(ctx.conn, sub["id"])
     missing = [(n, f) for n, f in fields if now[n - 1]["status"] != "found"]
@@ -194,6 +210,8 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
             f"{doc['key']} pp. {', '.join(str(v['printed']) for v in read.values())}" if read
             else f"{doc['key']} (nothing read)")
     notes = str((args or {}).get("notes") or "").strip()
+    earlier.append(f"- read pp. {', '.join(str(v['printed']) for v in read.values()) or 'none'}; recorded "
+                   f"{', '.join(recorded) or 'nothing'}" + (f"; notes: {clip(notes, 200)}" if notes else ""))
     ended = {"finished": "", "steps": " (stopped: step budget used)", "stalled": " (stopped: no tool use)",
              "error": " (stopped: model error)"}[why]
     report = (f"PDF agent on {doc['key']}{ended}: recorded: {', '.join(recorded) or 'nothing'}; missing: "
