@@ -179,3 +179,13 @@ def test_gaps_say_where_looked(env, monkeypatch):
     asyncio.run(agent.run_subtask(c, sub["id"]))
     note = c.conn.execute("select note from fields where name='Gross NPA %'").fetchone()[0]
     assert note.startswith("not found (looked in:")
+
+
+def test_reopening_a_field_clears_who_looked(env, monkeypatch):
+    c, sub, _, _ = env
+    c.conn.execute("update fields set status='unavailable' where name='Gross NPA %'")
+    fid = agent.all_fields(c.conn, sub["id"])[0]["id"]
+    sub["missing_web"], sub["missing_pdf"] = {fid}, {fid}
+    monkeypatch.setattr(agent, "local", Script(review((1, "retry", "check notes"))))
+    asyncio.run(agent.self_review(c, sub))
+    assert fid not in sub["missing_web"] and fid not in sub["missing_pdf"]

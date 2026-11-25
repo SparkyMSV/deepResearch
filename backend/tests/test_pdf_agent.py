@@ -101,3 +101,21 @@ def test_step_budget_ends_with_auto_report(env, monkeypatch):
     s = Script(*[Reply("", [call("locate", i, query=f"q{i}")], 100) for i in range(5)])
     out, _ = run(env, s, monkeypatch)
     assert out.startswith("PDF agent on D1") and "step budget" in out
+
+
+def test_same_printed_page_in_two_sections(env, monkeypatch):
+    c, sub = env
+    toc = [("Board report", 3), ("Standalone statements", 1), ("Standalone notes", 6), ("Consolidated statements", 1),
+           ("Consolidated notes", 6)]
+    ps = [f"filler {i}" for i in range(1, 31)]
+    for (t, _), pdf in zip(toc, (5, 10, 15, 20, 25)):
+        ps[pdf - 1] = f"{t}\nbody"
+    ps[20] = "Consolidated: total borrowings were 6,100 crore at 31 March 2026"
+    c.store.docs[U], c.store.toc[U] = ps, toc
+    s = Script(Reply("", [call("read_pages", **{"from": 2, "to": 2, "section": "Standalone statements"})], 500),
+               Reply("", [call("read_pages", 1, **{"from": 2, "to": 2, "section": "Consolidated statements"})], 500),
+               Reply("", [call("record_value", field=1, value="6,100", unit="crore", quote=Q, page=2,
+                               section="Consolidated statements")], 500), END)
+    run(env, s, monkeypatch)
+    assert "already read" not in s.sent[2]["messages"][-1]["content"]
+    assert tuple(c.conn.execute("select page, printed_page from fields where name='Total Debt'").fetchone()) == (21, 2)

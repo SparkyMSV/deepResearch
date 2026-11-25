@@ -10,7 +10,7 @@ from app.pdf import norm
 
 log = logging.getLogger(__name__)
 
-SEARCH_BEFORE, SEARCH_AFTER, LOCATED_MIN = 5, 25, 1
+SEARCH_BEFORE, SEARCH_AFTER, MAX_GAP = 5, 25, 400
 PASSAGE, OVERLAP, K1, B = 600, 100, 1.5, 0.75
 _WORD = re.compile(r"[a-z0-9]+(?:[.,][0-9]+)*")
 
@@ -95,7 +95,11 @@ def to_pdf(prep: Prepared, printed: int, section: str | None = None):
         cands = [(e["title"], e["pdf"] + printed - e["printed"]) for e, end in runs
                  if printed >= e["printed"] and e["pdf"] + printed - e["printed"] < end]
         if section:
-            cands = [c for c in cands if section.lower() in c[0].lower()]
+            exact = [c for c in cands if c[0].lower() == section.strip().lower()]
+            cands = exact or [c for c in cands if section.strip().lower() in c[0].lower()]
+            if not cands:
+                raise ValueError(f"no section {section!r} has a page {printed}; sections: "
+                                 + "; ".join(e["title"] for e, _ in runs))
         if len(cands) == 1:
             return cands[0][1]
         if len(cands) > 1:
@@ -131,28 +135,38 @@ async def prepare(store, url: str) -> Prepared:
     prep = Prepared(pages=n, scanned=sum(1 for i in range(1, n + 1) if not (layer.get(i) or "").strip()))
     c = await store.contents(url)
 
-    async def page_text(p: int) -> str:
-        return layer.get(p) or ""
+    titles = [t for t, _ in c.entries]
+    # the contents page lists the titles itself: never match an entry to a page that names two or more of them
+    toc_pages = {p for p, t in layer.items() if sum(_starts_with(t, x) for x in titles) >= 2}
 
-    for title, printed in c.entries:
-        e = {"title": title, "printed": printed, "pdf": None}
-        for p in range(max(1, printed - SEARCH_BEFORE), min(n, printed + SEARCH_AFTER) + 1):
-            if _starts_with(await page_text(p), title):
-                e["pdf"] = p
-                break
-        prep.contents.append(e)
+    def find(title: str, lo: int, hi: int) -> int | None:
+        return next((p for p in range(max(1, lo), min(n, hi) + 1)
+                     if p not in toc_pages and _starts_with(layer.get(p) or "", title)), None)
+
+    prep.contents = [{"title": t, "printed": pr, "pdf": find(t, pr - SEARCH_BEFORE, pr + SEARCH_AFTER)}
+                     for t, pr in c.entries]
     located = [e for e in prep.contents if e["pdf"]]
     if located:
-        offs = Counter(e["pdf"] - e["printed"] for e in located)
-        guess = offs.most_common(1)[0][0]
-        for e in prep.contents:  # entries whose title wasn't found: assume the common offset
-            e["pdf"] = e["pdf"] or (e["printed"] + guess if 1 <= e["printed"] + guess <= n else None)
-        prep.offset, prep.offset_ok = guess, len(located) >= LOCATED_MIN
+        guess = Counter(e["pdf"] - e["printed"] for e in located).most_common(1)[0][0]
+        for i, e in enumerate(prep.contents):  # not near its printed page: try around the common offset, then
+            if e["pdf"]:                       # anywhere between the neighbouring located entries
+                continue
+            e["pdf"] = find(e["title"], e["printed"] + guess - SEARCH_BEFORE, e["printed"] + guess + SEARCH_BEFORE)
+            if not e["pdf"]:
+                prev = max((x["pdf"] for x in prep.contents[:i] if x["pdf"]), default=0)
+                nxt = min((x["pdf"] for x in prep.contents[i + 1:] if x["pdf"]), default=n + 1)
+                e["pdf"] = find(e["title"], prev + 1, min(nxt - 1, prev + MAX_GAP))
+        last = 0
+        for e in prep.contents:  # entries must run forward through the PDF; drop any that don't
+            if e["pdf"] and e["pdf"] <= last:
+                e["pdf"] = None
+            last = e["pdf"] or last
+        prep.offset, prep.offset_ok = guess, True
     else:
-        prep.contents = []
+        # nothing located (e.g. scanned pages): keep the contents for the agent, numbers unverified
         offs = Counter()
         for p in range(1, n + 1, max(1, n // 12)):  # page numbers printed in footers/headers
-            lines = [ln.strip() for ln in (await page_text(p)).splitlines() if ln.strip()]
+            lines = [ln.strip() for ln in (layer.get(p) or "").splitlines() if ln.strip()]
             for ln in lines[:2] + lines[-3:]:
                 if re.fullmatch(r"\d{1,4}", ln):
                     offs[p - int(ln)] += 1

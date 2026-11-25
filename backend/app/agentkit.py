@@ -66,7 +66,7 @@ async def loop(ctx, sub, msgs: list[dict], tools: list[dict], handle, max_steps:
             idle += 1
             if idle >= 2:
                 return "stalled", None
-            msgs += [{"role": "assistant", "content": r.content}, {"role": "user", "content": NUDGE}]
+            msgs += [{"role": "assistant", "content": r.content or ""}, {"role": "user", "content": NUDGE}]
             continue
         idle = 0
         msgs.append({"role": "assistant", "content": r.content or "", "tool_calls": [

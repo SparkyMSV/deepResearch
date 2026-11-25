@@ -139,3 +139,24 @@ def test_verify_reads_past_a_cover_letter(monkeypatch):
     c, _ = make(monkeypatch, store, q)
     asyncio.run(docs.verify(c, NAVI, {"issuer": "Navi Finserv", "type": "annual report", "period": "FY26"}))
     assert "Financial statements" in q.prompts[0] and "cover letter" in q.prompts[0]
+
+
+def test_found_pdf_is_prepared_in_the_background(monkeypatch):
+    store = FakeStore({NAVI: ["CARE rationale for Navi Finserv " * 20]})
+    q = ScriptedQwen(("about Navi Finserv", {"match": True, "about": "CARE note"}))
+    c, _ = make(monkeypatch, store, q)
+    started = []
+
+    async def slow_prepare(ctx, doc):
+        started.append(doc["key"])
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(docs, "_prepare", slow_prepare)
+    field = dict(c.conn.execute("select * from fields").fetchone())
+
+    async def go():
+        d = await asyncio.wait_for(docs.add_found_pdf(c, NAVI, field), 2)  # returns without waiting for preparation
+        await asyncio.sleep(0)
+        return d
+
+    assert asyncio.run(go())["key"] == "D1" and started == ["D1"]

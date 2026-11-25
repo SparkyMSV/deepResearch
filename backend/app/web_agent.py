@@ -80,8 +80,8 @@ async def search(ctx, sub, field_nos: list[int], goal: str, on_round) -> str:
     async def handle(name: str, a: dict) -> str:
         if name == "search":
             q = fresh(a.get("query"), [h["query"] for h in ctx.search_history])
-            if ctx.search_history and a.get("note"):
-                ctx.search_history[-1]["note"] = clip(a["note"], 120)
+            if mine and a.get("note"):  # a remark on this call's previous search
+                mine[-1]["note"] = clip(a["note"], 120)
             if q is None:
                 return f"already tried a very similar search: {a.get('query')!r}. Use different words."
             hits = order_by_entity(await asyncio.to_thread(ddg, q, 20), entity)[:SHOW_RESULTS]

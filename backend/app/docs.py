@@ -114,6 +114,9 @@ async def find_document(ctx, doc: dict) -> None:
     log.info("document %s not found (%d candidates checked)", doc["key"], min(len(keep), MAX_CANDIDATES))
 
 
+_background: set[asyncio.Task] = set()  # strong refs so background preparations aren't garbage-collected
+
+
 async def _prepare(ctx, doc: dict) -> None:
     """Contents, page offsets and page index for the PDF agent; stored on the document row."""
     try:
@@ -144,6 +147,8 @@ async def add_found_pdf(ctx, url: str, field: dict) -> dict | None:
                  issuer=field["entity"], type="any", period=field["period"], status="planned")
     row = dict(ctx.conn.execute("select * from documents where id=?", (did,)).fetchone())
     ctx.set_doc(row, status="verified", url=url, **r)
-    await _prepare(ctx, row)
+    t = asyncio.create_task(_prepare(ctx, row))  # in the background: the web agent carries on meanwhile
+    _background.add(t)
+    t.add_done_callback(_background.discard)
     log.info("web PDF %s shared as %s (%s)", url, row["key"], r["about"])
     return row

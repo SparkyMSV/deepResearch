@@ -27,7 +27,7 @@ PDF_TOOLS = [
         {"from": _I, "to": _I, "section": _S}, ["from", "to"]),
     _fn("record_value", "Record a field's value from a page you read in full, quoting that page's own words. For a "
         "table row, quote the row label and the value joined by ' ... '.",
-        {"field": _I, "value": _S, "unit": _S, "period": _S, "quote": _S, "page": _I},
+        {"field": _I, "value": _S, "unit": _S, "period": _S, "quote": _S, "page": _I, "section": _S},
         ["field", "value", "quote", "page"]),
     _fn("report", "Finish: say what you found, which fields are missing, and where they might be.",
         {"found": _S, "missing": _S, "notes": _S}, ["notes"]),
@@ -70,13 +70,14 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
     fields = [(n, rows[n - 1]) for n in field_nos if isinstance(n, int) and 1 <= n <= len(rows)]
     if not fields:
         return "error: no valid fields to look for"
-    read: dict[int, dict] = {}  # printed page -> {"pdf","text"} read in this call (quotes are checked against these)
+    read: dict[int, dict] = {}  # PDF page -> {"printed","text"} read in this call (quotes are checked against these)
     recorded: list[str] = []
 
     async def handle(name: str, a: dict) -> str:
         if name == "locate":
             q = str(a.get("query") or "").strip()
-            hits = prep.index.locate(q, ANCHORS) if prep.index else []
+            hits = [h for h in (prep.index.locate(q, ANCHORS + 4) if prep.index else [])
+                    if h["printed"] is not None or not prep.contents][:ANCHORS]  # front matter can't be read
             on_round(f"{doc['key']} locate {clip(q, 40)}", 0)
             if not hits:
                 return ("no matches" + (" (scanned pages aren't searchable; use the contents and read_pages)"
@@ -90,9 +91,6 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
             hi = lo if hi is None or hi < lo else min(hi, lo + PAGES_PER_CALL - 1)
             out, pages = [], 0
             for p in range(lo, hi + 1):
-                if p in read:
-                    out.append(f"already read page {p} in this call; its text is above")
-                    continue
                 try:
                     pdf = docprep.to_pdf(prep, p, a.get("section"))
                 except ValueError as e:
@@ -101,24 +99,35 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
                 if isinstance(pdf, list):
                     out.append(f"page {p} exists in several sections: {'; '.join(pdf)}. Call again with section.")
                     continue
+                if pdf in read:
+                    out.append(f"already read page {p} in this call; its text is above")
+                    continue
                 if not ctx.pages_left():
                     out.append("Page budget used up; record what you have and call report.")
                     break
                 text = (await ctx.store.text(doc["url"], pdf))[:PAGE_CHARS]
-                read[p] = {"pdf": pdf, "text": text}
+                read[pdf] = {"printed": p, "text": text}
                 sub["read"].setdefault(doc["key"], set()).add(pdf)
                 ctx.pages_used += 1
                 pages += 1
                 out.append(f"[page {p}]\n{text.strip() or '(no text on this page)'}")
             if pages:
-                on_round(f"{doc['key']} {page_ranges([p for p in range(lo, hi + 1) if p in read])}", pages)
+                on_round(f"{doc['key']} {page_ranges([v['printed'] for v in read.values() if lo <= v['printed'] <= hi])}",
+                         pages)
             return "\n\n".join(out)
         if name == "record_value":
             n, p = _int(a.get("field")), _int(a.get("page"))
-            if p not in read:
+            try:
+                pdf = docprep.to_pdf(prep, p, a.get("section")) if p is not None else None
+            except ValueError:
+                pdf = None
+            if isinstance(pdf, list):  # ambiguous without a section: the page read in this call, if only one
+                hits = [k for k, v in read.items() if v["printed"] == p]
+                pdf = hits[0] if len(hits) == 1 else None
+            if pdf not in read:
                 return f"rejected: read the page first with read_pages (page {p} hasn't been read in full)"
-            src = {"url": doc["url"], "title": doc["name"], "key": doc["key"], "page": read[p]["pdf"], "kind": "doc",
-                   "text": read[p]["text"]}
+            src = {"url": doc["url"], "title": doc["name"], "key": doc["key"], "page": pdf, "kind": "doc",
+                   "text": read[pdf]["text"]}
             out = record(ctx, sub, n, str(a.get("value") or ""), str(a.get("unit") or ""), str(a.get("period") or ""),
                          str(a.get("quote") or ""), src)
             if out.startswith("recorded"):
@@ -139,7 +148,7 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
         tool_ids = {tc["id"]: tc["function"]["name"] for m in msgs for tc in m.get("tool_calls") or []}
         reads = [i for i, m in enumerate(msgs) if m.get("role") == "tool" and tool_ids.get(m["tool_call_id"]) == "read_pages"]
         for i in reads[:-1]:
-            pages = [p for p in read if f"[page {p}]" in msgs[i]["content"]]
+            pages = sorted({v["printed"] for v in read.values() if f"[page {v['printed']}]" in msgs[i]["content"]})
             msgs[i] = {**msgs[i], "content": "; ".join(REMOVED.format(p) for p in pages) or "[text removed]"}
         return msgs
 
@@ -150,12 +159,14 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
     sub.setdefault("missing_pdf", set()).update(f["id"] for _, f in missing)
     for n, f in fields:
         sub.setdefault("looked", {}).setdefault(f["id"], set()).add(
-            f"{doc['key']} {page_ranges(read)}" if read else f"{doc['key']} (nothing read)")
+            f"{doc['key']} pp. {', '.join(str(v['printed']) for v in read.values())}" if read
+            else f"{doc['key']} (nothing read)")
     notes = str((args or {}).get("notes") or "").strip()
     ended = {"finished": "", "steps": " (stopped: step budget used)", "stalled": " (stopped: no tool use)",
              "error": " (stopped: model error)"}[why]
     report = (f"PDF agent on {doc['key']}{ended}: recorded: {', '.join(recorded) or 'nothing'}; missing: "
               + (", ".join(f"[{n}] {f['name']}" for n, f in missing) or "none")
-              + (f"; notes: {notes}" if notes else "") + f"; pages read: {page_ranges(read) if read else 'none'}")
+              + (f"; notes: {notes}" if notes else "")
+              + f"; pages read: {', '.join(str(v['printed']) for v in read.values()) or 'none'}")
     log.info("%s", report)
     return report

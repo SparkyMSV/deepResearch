@@ -179,7 +179,10 @@ async def self_review(ctx, sub) -> str:
         f, act, hint = rows[n - 1], a.get("action"), str(a.get("hint") or "").strip()
         if act == "accept" and f["status"] in ("found", "unavailable"):
             ctx.set_field(f, accepted=1)
-        elif act == "reject":
+        elif act in ("reject", "retry"):  # reopened: the agents must look again before "not public" is allowed
+            for key in ("missing_web", "missing_pdf"):
+                sub.get(key, set()).discard(f["id"])
+        if act == "reject":
             ctx.set_field(f, status="open", value=None, unit=None, reported_period=None, source_url=None,
                           source_key=None, page=None, quote=None, source_kind=None, hint=hint or f["hint"])
             reopened = True
