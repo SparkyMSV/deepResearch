@@ -98,12 +98,6 @@ def mentions(hit: Hit, words: set[str]) -> bool:
     return any(w in t for w in words)
 
 
-def order_by_entity(hits: list[Hit], entity: str) -> list[Hit]:
-    """Hits naming the entity first; never drops any (topic entities like 'India' must still work)."""
-    w = key_word(entity)
-    return sorted(hits, key=lambda h: not mentions(h, {w})) if w else list(hits)
-
-
 def window(text: str, keywords: list[str], n: int = 6000) -> str:
     """Up to n chars of a long page, starting a little before the first keyword hit."""
     low = text.lower()

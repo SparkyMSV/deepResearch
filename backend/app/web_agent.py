@@ -10,7 +10,7 @@ from app.docs import _is_pdf, add_found_pdf
 from app.fields import _why_not, all_fields, record
 from app.logs import clip
 from app.pdf import norm
-from app.search import ddg, fetch, order_by_entity, window
+from app.search import ddg, fetch, window
 from app.tools import fresh
 
 log = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ async def search(ctx, sub, field_nos: list[int], goal: str, on_round) -> str:
                 mine[-1]["note"] = clip(a["note"], 120)
             if q is None:
                 return f"already tried a very similar search: {a.get('query')!r}. Use different words."
-            hits = order_by_entity(await asyncio.to_thread(ddg, q, 20), entity)[:SHOW_RESULTS]
+            hits = (await asyncio.to_thread(ddg, q, 20))[:SHOW_RESULTS]  # the engines' order: the model chooses
             h = {"query": q, "links": [(x.title, x.url) for x in hits], "hits": hits, "opened": [], "recorded": [],
                  "note": ""}
             ctx.search_history.append(h)

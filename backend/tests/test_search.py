@@ -188,11 +188,6 @@ def test_screen_drops_other_companies():
     assert [search.mentions(h, NAVI) for h in (nazara, charity, navi)] == [False, False, True]
 
 
-def test_order_by_entity_keeps_all():
-    a, b = Hit("x", "http://a", "nothing"), Hit("Navi results", "http://b", "")
-    assert search.order_by_entity([a, b], "Navi Finserv Limited") == [b, a]
-
-
 def test_window_centres_on_keyword():
     text = "x" * 10000 + "Gross NPA was 2%" + "y" * 10000
     w = search.window(text, ["gross npa"], 6000)
@@ -201,10 +196,7 @@ def test_window_centres_on_keyword():
 
 
 def test_screen_uses_the_brand_word_not_any_word():
-    bajaj = Hit("Bajaj Finserv", "https://www.bajajfinserv.in/", "Bajaj Finserv loans")
-    navi = Hit("Navi results", "https://navi.com/r", "")
     assert search.key_word("Navi Finserv Limited") == "navi"
-    assert search.order_by_entity([bajaj, navi], "Navi Finserv Limited") == [navi, bajaj]
 
 
 def test_ddg_uses_backends_and_falls_back(monkeypatch):
