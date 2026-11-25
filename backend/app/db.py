@@ -68,7 +68,22 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _add_missing_columns(conn)
     return conn
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    """`create table if not exists` leaves older databases' tables as they were: add new columns."""
+    ref = sqlite3.connect(":memory:")
+    ref.executescript(SCHEMA)
+    for (table,) in ref.execute("select name from sqlite_master where type='table' and name not like 'sqlite_%'"):
+        have = {r[1] for r in conn.execute(f"pragma table_info({table})")}
+        for _, name, typ, _, default, _ in ref.execute(f"pragma table_info({table})"):
+            if name not in have:
+                conn.execute(f"alter table {table} add column {name} {typ}"
+                             + (f" default {default}" if default is not None else ""))
+    conn.commit()
+    ref.close()
 
 
 def insert(conn: sqlite3.Connection, table: str, **cols) -> int:

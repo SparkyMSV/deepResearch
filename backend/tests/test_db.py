@@ -68,3 +68,19 @@ def test_new_columns():
 
 def test_settings_specialists():
     assert (config.MAX_DELEGATIONS, config.PDF_STEPS, config.WEB_STEPS) == (6, 12, 12)
+
+
+def test_old_database_gets_new_columns(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old.sqlite")
+    old = sqlite3.connect(path)
+    old.execute("create table documents(id integer primary key autoincrement, task_id integer, key text)")
+    old.execute("insert into documents(task_id, key) values(1, 'D1')")
+    old.commit()
+    old.close()
+    conn = connect(path)
+    cols = {r["name"] for r in conn.execute("pragma table_info(documents)")}
+    assert {"offset_ok", "contents", "notes", "url"} <= cols
+    update(conn, "documents", 1, offset_ok=1)
+    row = conn.execute("select key, offset_ok from documents").fetchone()
+    assert (row["key"], row["offset_ok"]) == ("D1", 1)
