@@ -63,7 +63,7 @@ async def loop(ctx, sub, msgs: list[dict], tools: list[dict], handle, max_steps:
             try:
                 p = await local("research", msgs + [{"role": "user", "content": ask}], max_tokens=THINK_TOKENS,
                                 think=True, on_wait=wait)
-                if (plan := (p.content or "").strip()):
+                if (plan := (p.content or "").strip() or clip(p.reasoning, 1500)):  # some models answer only in thought
                     log.info("plan: %s", clip(plan, 500))
                     msgs += [{"role": "user", "content": ask}, {"role": "assistant", "content": plan},
                              {"role": "user", "content": GO}]

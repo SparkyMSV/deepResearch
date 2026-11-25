@@ -253,3 +253,16 @@ def test_prompt_uses_the_contents_to_judge_locate_hits(env, monkeypatch):
     run(env, s, monkeypatch)
     sys = s.sent[0]["messages"][0]["content"]
     assert "contents above" in sys and "false positive" in sys
+
+
+def test_plan_kept_when_the_model_answers_only_in_its_thinking(env, monkeypatch):
+    from app import agentkit as ak
+    s = Script(END)
+
+    async def thinker(role, messages, tools=None, max_tokens=800, think=False, on_token=None, on_wait=None,
+                      max_wait=None):
+        if messages[-1]["content"] == ak.PLAN_ASK:
+            return Reply("", [], 10, reasoning="Ratios sit in the debt covenants note; start there.")
+        return await s(role, messages, tools, max_tokens, think, on_token, on_wait, max_wait)
+    run(env, thinker, monkeypatch)
+    assert "debt covenants note" in str(s.sent[0]["messages"])
