@@ -188,12 +188,6 @@ def test_screen_drops_other_companies():
     assert [search.mentions(h, NAVI) for h in (nazara, charity, navi)] == [False, False, True]
 
 
-def test_doc_score_orders():
-    good = Hit("Annual report", "https://navi.com/docs/2023-24.pdf", "Navi Finserv")
-    old = Hit("Annual report", "https://other.org/navi-2019-20.pdf", "Navi Finserv")
-    assert search.doc_score(good, NAVI, "FY2023-24", ["navi.com"]) > search.doc_score(old, NAVI, "FY2023-24", ["navi.com"])
-
-
 def test_order_by_entity_keeps_all():
     a, b = Hit("x", "http://a", "nothing"), Hit("Navi results", "http://b", "")
     assert search.order_by_entity([a, b], "Navi Finserv Limited") == [b, a]

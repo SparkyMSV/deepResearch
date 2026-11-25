@@ -8,11 +8,11 @@ from app import docprep
 from app.db import insert
 from app.local_llm import WORK, parse_json, qwen
 from app.logs import clip
-from app.search import ddg, doc_score, key_word, mentions, name_words
+from app.search import ddg, key_word, mentions, name_words
 
 log = logging.getLogger(__name__)
 
-MAX_CANDIDATES, DESCRIBE_CHARS, MAX_SITE_SEARCHES = 3, 3000, 2
+MAX_CANDIDATES, CHOICES, DESCRIBE_CHARS, MAX_SITE_SEARCHES = 3, 8, 3000, 2
 
 
 def page_ranges(pages) -> str:
@@ -76,6 +76,20 @@ async def _verify(ctx, url: str, expect: dict, about_entity: bool) -> dict | Non
     return out
 
 
+async def _choose(ctx, hits: list, expect: dict) -> list:
+    """The model picks which search results to open, best first (at most MAX_CANDIDATES); the search engines'
+    order stands when there's nothing to choose or its reply is unusable."""
+    if len(hits) <= 1:
+        return hits
+    lines = "\n".join(f"[{i}] {h.title} — {h.url} — {clip(h.snippet, 160)}" for i, h in enumerate(hits, 1))
+    d = await _ask(f"Wanted: the {expect['type']} of {expect['issuer']} for {expect['period']}. Search results:\n"
+                   f"{lines}\nWhich results are most likely this document (the right organisation and period, the "
+                   "document itself rather than a page about it)? Reply JSON only: "
+                   f'{{"pick":[numbers, best first, at most {MAX_CANDIDATES}]}}')
+    pick = [n for n in (d or {}).get("pick") or [] if isinstance(n, int) and 1 <= n <= len(hits)]
+    return [hits[n - 1] for n in dict.fromkeys(pick)][:MAX_CANDIDATES] or hits[:MAX_CANDIDATES]
+
+
 async def verify(ctx, url: str, expect: dict, about_entity: bool = False) -> dict | None:
     """Qwen checks page 1 of a PDF against what we expect. One check per URL per research (concurrent
     callers share it). Pages read here don't count against the page budget."""
@@ -104,11 +118,10 @@ async def find_document(ctx, doc: dict) -> None:
                 keep.append(h)
             else:
                 log.info("document %s: screened out %s (no %s in URL/title/snippet)", doc["key"], h.url, sorted(brand))
-        if len(keep) >= MAX_CANDIDATES:
+        if len(keep) >= CHOICES:
             break
-    keep.sort(key=lambda h: -doc_score(h, words, doc["period"], domains))
     expect = {"issuer": doc["issuer"] or doc["name"], "type": doc["type"] or "document", "period": doc["period"]}
-    for h in keep[:MAX_CANDIDATES]:
+    for h in await _choose(ctx, keep[:CHOICES], expect):
         r = await verify(ctx, h.url, expect)
         if r:
             ctx.set_doc(doc, status="verified", url=h.url, **r)

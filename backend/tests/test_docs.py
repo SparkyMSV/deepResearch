@@ -51,7 +51,7 @@ def test_find_document_not_found_after_three_rejections(monkeypatch):
     q = ScriptedQwen(("Another year is fine", {"match": False}))
     c, _ = make(monkeypatch, store, q, [Hit("Navi Finserv", u, "") for u in urls])
     asyncio.run(docs.find_document(c, plan_doc(c)))
-    assert c.doc("D1")["status"] == "not_found" and len(q.prompts) == 3
+    assert c.doc("D1")["status"] == "not_found" and sum("Another year is fine" in p for p in q.prompts) == 3
 
 
 def test_verify_dedupes_concurrent_calls(monkeypatch):
@@ -178,3 +178,14 @@ def test_verify_asks_about_the_entity_itself_not_a_related_company(monkeypatch):
     assert asyncio.run(docs.verify(c, NAVI, {"issuer": "Mindspace REIT", "type": "rating rationale",
                                              "period": "FY2025-26"})) is None
     assert "not a subsidiary" in q.prompts[0]
+
+
+def test_model_picks_which_candidates_to_verify(monkeypatch):
+    old, new = "http://navi.com/annual-report-2024-25.pdf", "http://navi.com/annual-report-2025-26.pdf"
+    store = FakeStore({old: ["Navi Finserv annual report 2024-25"], new: ["Navi Finserv annual report 2025-26"]})
+    q = ScriptedQwen(("Which results", {"pick": [2]}),
+                     ("Another year is fine", {"match": True, "about": "Navi AR", "dated": "FY2025-26"}))
+    c, _ = make(monkeypatch, store, q, [Hit("Navi Finserv annual report", old, ""), Hit("Navi Finserv annual report", new, "")])
+    asyncio.run(docs.find_document(c, plan_doc(c)))
+    assert c.doc("D1")["url"] == new and old not in [u for u, _ in store.reads]
+    assert "annual-report-2024-25" in q.prompts[0] and "FY2025-26" in q.prompts[0]
