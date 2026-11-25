@@ -126,10 +126,11 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
                 if not ctx.pages_left():
                     out.append("Page budget used up; record what you have and call report.")
                     break
-                text = (await ctx.store.text(doc["url"], pdf))[:PAGE_CHARS * (2 if prep.spread else 1)]
+                full = await ctx.store.text(doc["url"], pdf)  # kept whole for table lookups and quote checks
+                text = full[:PAGE_CHARS * (2 if prep.spread else 1)]
                 pp = docprep.to_printed(prep, pdf)
                 label = f"pages {pp}-{pp + 1}" if prep.spread and pp and pp % 2 == 0 else f"page {p}"
-                read[pdf] = {"printed": p, "text": text, "label": label}
+                read[pdf] = {"printed": p, "text": full, "label": label}
                 now.add(pdf)
                 sub["read"].setdefault(doc["key"], set()).add(pdf)
                 ctx.pages_used += 1
@@ -155,10 +156,11 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
             value, period, quote = str(a.get("value") or ""), str(a.get("period") or ""), str(a.get("quote") or "")
             if a.get("row"):  # the harness reads the number, so it can't be mistyped
                 c = tables.cell(read[pdf]["text"], str(a["row"]), str(a.get("column") or ""))
-                if c.error:
+                if c.error and not quote:
                     on_round(f"rejected: {c.error}"[:80], 0)
                     return f"rejected: {c.error}"
-                value, period, quote = c.value, period or c.column, c.quote
+                if not c.error:
+                    value, period, quote = c.value, period or c.column, c.quote
             out = record(ctx, sub, n, value, str(a.get("unit") or ""), period, quote, src)
             if out.startswith("recorded"):
                 f = all_fields(ctx.conn, sub["id"])[n - 1]

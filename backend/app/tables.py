@@ -7,7 +7,8 @@ from app.pdf import norm
 
 _TABLE = re.compile(r"<table.*?</table>", re.S | re.I)
 _ROW = re.compile(r"<tr.*?</tr>", re.S | re.I)
-_CELL = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.S | re.I)
+_CELL = re.compile(r"<t[dh]([^>]*)>(.*?)</t[dh]>", re.S | re.I)
+_SPAN = re.compile(r"colspan\s*=\s*[\"']?(\d+)", re.I)
 _NUM = re.compile(r"^\(?-?[\d,]+(\.\d+)?\)?%?$")
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -20,15 +21,22 @@ class Cell(NamedTuple):
     error: str = ""
 
 
+def _span(attrs: str) -> int:
+    m = _SPAN.search(attrs)
+    return int(m.group(1)) if m else 1
+
+
 def _parse(page: str) -> list[tuple[list[str], list[list[str]]]]:
     """(column headings, data rows) per table. Header rows are those before the first row holding a number;
-    a column's heading joins its header cells ("As at" + "March 31, 2026").
-    shortcut: colspan/rowspan are ignored; upgrade if OCR tables with merged cells mis-assign columns."""
+    a column's heading joins its header cells ("As at" + "March 31, 2026"); colspan cells repeat.
+    shortcut: rowspan is ignored; upgrade if OCR tables with row-merged cells mis-assign columns."""
     out = []
     for t in _TABLE.findall(page):
-        rows = [[norm(c) for c in _CELL.findall(r)] for r in _ROW.findall(t)]
+        rows = [[norm(c) for attrs, c in _CELL.findall(r) for _ in range(_span(attrs))] for r in _ROW.findall(t)]
         rows = [r for r in rows if r]
-        first = next((i for i, r in enumerate(rows) if any(_NUM.match(c) for c in r[1:])), len(rows))
+        # the first data row has a label and a number; a row of bare years ("", 2026, 2025) is a header
+        first = next((i for i, r in enumerate(rows)
+                      if any(ch.isalpha() for ch in r[0]) and any(_NUM.match(c) for c in r[1:])), len(rows))
         width = max(map(len, rows), default=0)
         heads = [" ".join(r[j] for r in rows[:first] if j < len(r) and r[j]) for j in range(width)]
         out.append((heads, rows[first:]))
@@ -49,10 +57,11 @@ def cell(page: str, row: str, column: str) -> Cell:
     hits = exact or [x for x in rows if want in x[1][0].lower()]
     if not hits:
         return Cell(error="no row labelled like that; rows: " + "; ".join(r[0] for _, r in rows[:12]))
-    if len({r[0] for _, r in hits}) > 1:
+    if len({r[0] for _, r in hits}) > 1 or len({tuple(r) for _, r in hits}) > 1:
         return Cell(error="several rows match; use the full label: " + "; ".join(r[0] for _, r in hits[:8]))
     heads, r = hits[0]
-    q = _words(column)
+    shared = set.intersection(*[_words(h) for h in heads[1:] if h] or [set()])
+    q = (_words(column) - shared) or _words(column)  # "As at March 31, 2025": only "2025" tells columns apart
     scores = [len(q & _words(h)) if j else 0 for j, h in enumerate(heads)]  # column 0 holds the labels
     best = max(scores, default=0)
     cols = [j for j, s in enumerate(scores) if s == best and s]

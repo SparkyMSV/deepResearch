@@ -84,3 +84,16 @@ def test_old_database_gets_new_columns(tmp_path):
     update(conn, "documents", 1, offset_ok=1)
     row = conn.execute("select key, offset_ok from documents").fetchone()
     assert (row["key"], row["offset_ok"]) == ("D1", 1)
+
+
+def test_old_table_gets_a_column_with_a_non_constant_default(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old2.sqlite")
+    old = sqlite3.connect(path)
+    old.execute("create table messages(id integer primary key autoincrement, content text)")
+    old.execute("insert into messages(content) values('hi')")
+    old.commit()
+    old.close()
+    conn = connect(path)
+    assert "created_at" in {r["name"] for r in conn.execute("pragma table_info(messages)")}
+    assert conn.execute("select content from messages").fetchone()["content"] == "hi"

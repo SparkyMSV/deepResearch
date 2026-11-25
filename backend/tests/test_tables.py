@@ -40,3 +40,28 @@ def test_unclear_row_or_column_explained():
 
 def test_quote_check_ignores_digit_grouping():
     assert _why_not("118210.52", "Adjusted net debt ... 118,210.52", norm(PAGE)) is None
+
+
+def test_colspan_header_picks_the_right_year():
+    pg = ("<table><tr><td>Particulars</td><td colspan=2>As at</td></tr>"
+          "<tr><td></td><td>March 31, 2026</td><td>March 31, 2025</td></tr>"
+          "<tr><td>Adjusted net debt</td><td>1,18,210.52</td><td>95,041.50</td></tr></table>")
+    assert tables.cell(pg, "Adjusted net debt", "As at March 31, 2025").value == "95,041.50"
+    assert tables.cell(pg, "Adjusted net debt", "March 31, 2026").value == "1,18,210.52"
+
+
+def test_year_header_row_is_a_header():
+    pg = ("<table><tr><td>Year ended March 31</td><td></td><td></td></tr><tr><td></td><td>2026</td><td>2025</td></tr>"
+          "<tr><td>Revenue</td><td>2,510</td><td>2,301</td></tr></table>")
+    c = tables.cell(pg, "Revenue", "2025")
+    assert (c.value, c.column) == ("2,301", "2025")
+
+
+def test_same_label_with_different_values_is_ambiguous():
+    pg = ("<table><tr><td>Particulars</td><td>2026</td></tr><tr><td>Total</td><td>500</td></tr>"
+          "<tr><td>Total</td><td>300</td></tr></table>")
+    assert "several rows" in tables.cell(pg, "Total", "2026").error
+
+
+def test_grouping_ignored_only_inside_numbers():
+    assert _why_not("34", "Notes 34 and 5 apply", norm("Notes 3,4 and 5 apply")) is not None

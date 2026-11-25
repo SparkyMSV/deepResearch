@@ -9,6 +9,7 @@ from app.pdf import norm
 log = logging.getLogger(__name__)
 
 MIN_QUOTE = 12
+_GROUPED = re.compile(r"\b\d{1,3}(?:,\d{2,3})+(?:\.\d+)?")  # numbers only: "3,4" stays
 
 
 def cite(f: dict) -> str:
@@ -41,7 +42,7 @@ def _why_not(value: str, quote: str, page: str) -> str | None:
     parts = [norm(p) for p in re.split(r"\.\.\.|…", quote or "") if norm(p)]
     if not parts or sum(len(p) for p in parts) < MIN_QUOTE:
         return f"quote too short (at least {MIN_QUOTE} characters of the page's own words)"
-    ungroup = lambda s: re.sub(r"(?<=\d),(?=\d)", "", s)  # 1,18,210.52 = 118,210.52 = 118210.52
+    ungroup = lambda s: _GROUPED.sub(lambda m: m.group().replace(",", ""), s)  # 1,18,210.52 = 118,210.52 = 118210.52
     if any(ungroup(p) not in ungroup(page) for p in parts):
         return ("quote not found word for word on the pages you read last (for a table, quote the row label and "
                 "the value joined by ' ... ')")

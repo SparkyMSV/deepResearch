@@ -94,12 +94,14 @@ async def final_review(ctx, ask) -> None:
     """One cloud call over every field of the research. ask(messages) -> reply text. On any failure the
     values keep their review levels (the report labels them)."""
     rows = [dict(r) for r in ctx.conn.execute("select * from fields where task_id=? order by id", (ctx.task_id,))]
+    dated = {k: p for k, p in ctx.conn.execute("select key, period from documents where task_id=?", (ctx.task_id,))}
     lines = []
     for i, f in enumerate(rows, 1):
         head = f"[{i}] {f['name']} — {f['entity'] or 'any'}, {f['period']}: "
         if f["status"] == "found":
-            src = cite(dict(f))
-            body = f"{f['value']} {f['unit'] or ''} ({src}) quote: \"{f['quote']}\""
+            src = cite(dict(f)) + (f", dated {dated[f['source_key']]}" if dated.get(f["source_key"]) else "")
+            body = (f"{f['value']} {f['unit'] or ''} (reported period {f['reported_period'] or '?'}; {src}) "
+                    f"quote: \"{f['quote']}\"")
         else:
             body = "not public" if f["status"] == "unavailable" else "not found"
         lines.append(head + body + (f" | note: {f['note']}" if f["note"] else ""))

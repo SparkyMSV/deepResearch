@@ -101,3 +101,13 @@ def test_final_review_has_no_unavailable_action_and_warns_against_own_beliefs(ct
     asyncio.run(final.final_review(ctx, ask))
     assert levels(ctx)[1] == ("B", "found", "2", 0)  # ignored: the reviewer can't declare a field not public
     assert "not from your own beliefs" in ask.msgs[0]["content"] and "unavailable" not in ask.msgs[0]["content"]
+
+
+def test_final_review_sees_the_reported_period_and_document_date(ctx):
+    insert(ctx.conn, "documents", task_id=ctx.task_id, key="D2", name="ICRA", period="April 2025", status="verified")
+    ctx.conn.execute("update fields set reported_period='9M FY2025', source_key='D2', page=4 where name='B'")
+    async def ask(msgs):
+        ask.msgs = msgs
+        return json.dumps({"fields": []})
+    asyncio.run(final.final_review(ctx, ask))
+    assert "reported period 9M FY2025" in ask.msgs[1]["content"] and "dated April 2025" in ask.msgs[1]["content"]

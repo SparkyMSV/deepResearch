@@ -76,6 +76,7 @@ class Prepared:
     scanned: int = 0  # pages without a text layer (not indexed)
     spread: bool = False  # each PDF page holds two printed pages (2-3, 4-5, ...)
     index: PageIndex | None = None
+    headers: set[str] = field(default_factory=set)  # running header/footer lines, digits masked
     notes: list[dict] = field(default_factory=list)  # {"no","title","pdf","section"}: first page of each note
 
 
@@ -160,20 +161,35 @@ def to_printed(prep: Prepared, pdf_page: int) -> int | None:
     return p if p >= 1 else None
 
 
-def _forward(pdfs: list[int | None]) -> list[int]:
-    """Indexes of the longest strictly increasing run of located PDF pages (None = not located)."""
+def _forward(pdfs: list[int | None], same_ok: bool = False) -> list[int]:
+    """Indexes of the longest increasing run of located PDF pages (None = not located); same_ok lets two entries
+    share a page (both halves of one spread)."""
     idx = [i for i, p in enumerate(pdfs) if p]
     best: dict[int, list[int]] = {}
     for i in idx:
-        best[i] = max((best[j] for j in idx if j < i and pdfs[j] < pdfs[i]), key=len, default=[]) + [i]
+        best[i] = max((best[j] for j in idx if j < i and (pdfs[j] < pdfs[i] or same_ok and pdfs[j] == pdfs[i])), key=len, default=[]) + [i]
     return max(best.values(), key=len, default=[])
 
 
-def _numbered(text: str, printed: int, spread: bool) -> bool:
-    """The page prints this page number (or, on a spread, its pair's) near its top or bottom."""
-    t = " ".join(text.split())
+def _mask(line: str) -> str:
+    return re.sub(r"\d+", "#", " ".join(line.split()))
+
+
+def _headers(layer: dict[int, str]) -> set[str]:
+    """Running header/footer lines with digits masked ("# Annual Report #-#"): those on many pages."""
+    count = Counter()
+    for t in layer.values():
+        count.update({_mask(ln) for ln in (t or "").splitlines()
+                      if re.fullmatch(r"\d{1,4}", ln.strip())  # bare page-number footers
+                      or 3 < len(ln.strip()) <= 80 and re.search(r"\d", ln) and re.search(r"[A-Za-z]", ln)})
+    return {m for m, k in count.items() if k >= max(3, len(layer) // 10)}
+
+
+def _numbered(text: str, printed: int, spread: bool, headers: set[str]) -> bool:
+    """The page prints this page number (or, on a spread, its pair's) in a running header or footer line."""
     nums = {printed, printed ^ 1} if spread else {printed}
-    return any(re.search(rf"(?<![\d.,]){n}(?![\d.,%])", t[:200] + " | " + t[-200:]) for n in nums)
+    return any(_mask(ln) in headers and nums & {int(x) for x in re.findall(r"(?<![\d.,])\d+(?![\d.,%])", ln)}
+               for ln in text.splitlines())
 
 
 def _starts_with(text: str, title: str) -> bool:
@@ -190,6 +206,7 @@ async def prepare(store, url: str) -> Prepared:
     layer = await store.text_layer(url)
     prep = Prepared(pages=n, scanned=sum(1 for i in range(1, n + 1) if not (layer.get(i) or "").strip()),
                     spread=await store.spread(url))
+    prep.headers = _headers(layer)
     c = await store.contents(url)
 
     titles = [t for t, _ in c.entries]
@@ -216,7 +233,7 @@ async def prepare(store, url: str) -> Prepared:
                 prev = max((x["pdf"] for x in out[:i] if x["pdf"]), default=0)
                 nxt = min((x["pdf"] for x in out[i + 1:] if x["pdf"]), default=n + 1)
                 e["pdf"] = find(e["title"], prev + 1, min(nxt - 1, prev + MAX_GAP))
-        keep = set(_forward([e["pdf"] for e in out]))  # entries must run forward through the PDF: keep the
+        keep = set(_forward([e["pdf"] for e in out], prep.spread))  # entries must run forward through the PDF: keep the
         for i, e in enumerate(out):                       # longest such run, drop the outliers
             if i not in keep:
                 e["pdf"] = None
@@ -231,9 +248,9 @@ async def prepare(store, url: str) -> Prepared:
         guess = Counter(e["pdf"] - _h(prep, e["printed"]) for e in located).most_common(1)[0][0]
         for e in prep.contents:  # the page at the common offset prints the entry's page number: that's its start
             at = _h(prep, e["printed"]) + guess
-            if e["pdf"] != at and 1 <= at <= n and _numbered(layer.get(at) or "", e["printed"], prep.spread):
+            if e["pdf"] != at and 1 <= at <= n and _numbered(layer.get(at) or "", e["printed"], prep.spread, prep.headers):
                 e["pdf"] = at
-        keep = set(_forward([e["pdf"] for e in prep.contents]))
+        keep = set(_forward([e["pdf"] for e in prep.contents], prep.spread))
         for i, e in enumerate(prep.contents):
             if i not in keep:
                 e["pdf"] = None

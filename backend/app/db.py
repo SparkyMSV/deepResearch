@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,8 +81,8 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         have = {r[1] for r in conn.execute(f"pragma table_info({table})")}
         for _, name, typ, _, default, _ in ref.execute(f"pragma table_info({table})"):
             if name not in have:
-                conn.execute(f"alter table {table} add column {name} {typ}"
-                             + (f" default {default}" if default is not None else ""))
+                constant = default is not None and re.fullmatch(r"-?[\d.]+|'[^']*'", default)  # sqlite refuses others
+                conn.execute(f"alter table {table} add column {name} {typ}" + (f" default {default}" if constant else ""))
     conn.commit()
     ref.close()
 

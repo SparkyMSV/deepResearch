@@ -177,3 +177,23 @@ def test_list_notes_tool(env, monkeypatch):
     assert "17 BORROWINGS — p.11" in s.sent[1]["messages"][-1]["content"]
     assert "19 CAPITAL MANAGEMENT — p.12" in s.sent[1]["messages"][-1]["content"]
     assert "Financial statements" in s.sent[2]["messages"][-1]["content"]  # lists the sections that have notes
+
+
+def test_table_past_the_shown_text_still_readable(env, monkeypatch):
+    from tests.test_tables import PAGE
+    c, sub = env
+    ps = pages()
+    ps[13] = "Notes " + "x" * 5000 + PAGE
+    c.store = FakeStore({U: ps}, {U: TOC})
+    s = Script(Reply("", [call("read_pages", **{"from": 12, "to": 12})], 900),
+               Reply("", [call("record_value", field=1, row="Gross debt", column="2026", page=12)], 1500), END)
+    run(env, s, monkeypatch)
+    assert c.conn.execute("select value from fields where name='Total Debt'").fetchone()[0] == "1,30,386.42"
+
+
+def test_failed_table_lookup_falls_back_to_the_quote(env, monkeypatch):
+    s = Script(Reply("", [call("read_pages", **{"from": 12, "to": 12})], 900),
+               Reply("", [call("record_value", field=1, value="6,100", unit="crore", quote=Q, row="Borrowings",
+                               column="2026", page=12)], 1500), END)
+    run(env, s, monkeypatch)
+    assert env[0].conn.execute("select value from fields where name='Total Debt'").fetchone()[0] == "6,100"

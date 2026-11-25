@@ -149,9 +149,10 @@ def test_one_word_title_not_matched_far_from_its_page():
 
 def test_printed_page_number_corrects_a_title_match_elsewhere():
     pages, toc = doc_with_offset_two()
-    pages[11] = "Independent auditor's report\nbody\n10"  # the real start: no title on top, page number in the footer
+    pages[11] = "Independent auditor's report\nbody"  # the real start: no title on top, page number in the footer
     pages[19] = "Financial statements of the subsidiaries\nbody"  # a later page starting with the same words
-    pages[16] = "Notes overview\nbody\n15"  # an entry whose title isn't on top: placed by its page number
+    pages[16] = "Notes overview\nbody"  # an entry whose title isn't on top: placed by its page number
+    pages = [f"{t}\n{i - 2}" if i > 2 else t for i, t in enumerate(pages, 1)]  # page-number footers
     p = prep(pages, toc)
     assert [e["pdf"] for e in p.contents] == [6, 12, 17, 22, 27]
 
@@ -177,3 +178,21 @@ def test_notes_restarting_in_one_section_and_headers_skipped():
     pages[39] = "394 NEXUS SELECT TRUST 395\n18 BORROWINGS\nconsolidated"
     p = prep(pages, toc)
     assert docprep.notes(p, "Financial statements") == [("18", "BORROWINGS", 11), ("18", "BORROWINGS", 38)]
+
+
+def test_page_numbers_only_from_running_header_lines():
+    pages, toc = doc_with_offset_two()
+    pages = [f"{t}\n{i - 2} Annual Report 2025-26" for i, t in enumerate(pages, 1)]  # running header on every page
+    pages[11] = "Independent auditor's report\nbody\n10 Annual Report 2025-26"  # the true start: header number only
+    pages[19] = "Financial statements of the subsidiaries\nbody\n18 Annual Report 2025-26"
+    pages[4] = "Directors report\nWe own 4 malls in 4 cities\n3 Annual Report 2025-26"  # "4" in the text is no page no.
+    pages[5] = "Directors report continued\nbody\n4 Annual Report 2025-26"
+    p = prep(pages, toc)
+    assert docprep._numbered(pages[4], 4, False, p.headers) is False
+    assert docprep._numbered(pages[5], 4, False, p.headers) is True
+    assert [e["pdf"] for e in p.contents][1] == 12
+
+
+def test_spread_entries_on_one_sheet_both_kept():
+    assert docprep._forward([2, 3, 3, 4], same_ok=True) == [0, 1, 2, 3]
+    assert docprep._forward([2, 3, 3, 4]) == [0, 1, 3]
