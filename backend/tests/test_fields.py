@@ -54,9 +54,14 @@ def test_record_ok_and_evidence(env):
 def test_record_rejects_quote_not_on_page_and_bad_field(env):
     c, sub = env
     assert fields.record(c, sub, 1, "2.1", "%", "", "GNPA stood at 2.1 percent", SRC).startswith("rejected: quote not")
-    assert fields.record(c, sub, 1, "2.1", "%", "", "2.1%", SRC).startswith("rejected: quote too short")
+    assert fields.record(c, sub, 1, "2.1", "%", "", "", SRC).startswith("rejected: no quote")
     assert fields.record(c, sub, 1, "5.5", "%", "", "GNPA was 2.1% and NNPA", SRC).startswith("rejected: the quote doesn't contain")
     assert fields.record(c, sub, 9, "2.1", "%", "", "GNPA was 2.1% and NNPA", SRC).startswith("rejected: no field 9")
+
+
+def test_record_accepts_short_quote(env):
+    c, sub = env  # a short row label plus its number ("Total ... 38.2") is still the page's own words
+    assert fields.record(c, sub, 1, "2.1", "%", "", "2.1%", SRC).startswith("recorded")
 
 
 def test_record_never_overwrites_accepted(env):
