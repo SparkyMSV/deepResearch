@@ -8,7 +8,7 @@ from app.db import insert, update
 _DOC_COLS = ("id", "task_id", "key", "name", "issuer", "type", "period", "url", "about", "covers", "pages", "status")
 _SUB_COLS = ("id", "task_id", "objective", "status", "round", "loop", "restarts")
 _FIELD_COLS = ("id", "task_id", "subtask_id", "name", "entity", "period", "kind", "hint", "status", "accepted",
-               "value", "unit", "reported_period", "source_url", "source_key", "page", "source_kind", "note")
+               "value", "unit", "reported_period", "source_url", "source_key", "page", "printed_page", "source_kind", "note")
 
 
 @dataclass

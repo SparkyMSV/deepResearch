@@ -16,17 +16,24 @@ FastAPI backend in `backend/`, React + Vite frontend in `frontend/`.
    **documents** worth finding (annual reports, filings, rating rationales).
 3. **Documents.** Each planned document is searched for; candidates whose URL, title and snippet don't name
    the company are dropped for free; Bonsai checks page 1 of the best three.
-4. **Explore (Bonsai, one sub-task at a time).** Bonsai works through tools: `search`, `open_result`,
-   `pdf_contents`, `pdf_find`, `pdf_page`, `record_value`, `mark_not_public`, `done`. The guardrails live in
-   the tools: no repeat searches or pages, every value quoted word for word from the page it came from,
-   documents outrank web pages, accepted values are final, page and step budgets. Every request starts with
-   the same opening (rules, date, fields, documents) so MTPLX reuses it; the conversation is compacted
-   before it nears the 16K context.
-5. **Self-review (Bonsai, thinking on).** Accepts, rejects or sends fields back with a hint; up to
+4. **Prepare documents (no model).** Each confirmed PDF is described from its first pages (past any
+   cover letter to the exchange), its contents page is read, the page offset is worked out per section
+   (printed vs PDF page numbers), and a keyword index of every page is built.
+5. **Explore (Bonsai, one sub-task at a time).** A **main agent** decides, per field, where to look and hands
+   the work over:
+   - the **PDF agent** gets one document and a few fields; it uses `locate` to find anchor pages, reads whole
+     pages with `read_pages` (printed page numbers; offsets and OCR are handled inside the tool) and records
+     values with exact quotes;
+   - the **web agent** gets the objective and the research's search history (every query, every link it
+     returned, and whether it helped); it searches, opens results and records values. PDFs it finds become
+     documents for the main agent.
+   Only the main agent may mark a field "not public", and only after both routes reported it missing.
+   Guardrails stay in the tools: exact quotes, no repeat searches, documents outrank web pages, budgets.
+6. **Self-review (Bonsai, thinking on).** Accepts, rejects or sends fields back with a hint; up to
    `DR_MAX_RESTARTS` more loops.
-6. **Consistency checks.** Only when every figure of an identity was found (e.g. assets = liabilities +
+7. **Consistency checks.** Only when every figure of an identity was found (e.g. assets = liabilities +
    equity): mismatches add a note, nothing is rejected.
-7. **Final review and report (cloud).** One review of all values (confirmed / checked locally /
+8. **Final review and report (cloud).** One review of all values (confirmed / checked locally /
    unreviewed), then a cited report with figures in tables and a Gaps section.
 
 Researches run one at a time (a second one shows "queued"); chat keeps working meanwhile.
@@ -49,7 +56,8 @@ Copy `.env.example` to `.env` and fill in:
 - `GEMINI_API_KEY`, `GROQ_API_KEY`
 - Local models: `DR_RESEARCH_URL` (default `http://127.0.0.1:8001/v1`), `DR_CHAT_URL` (default
   `http://127.0.0.1:8002/v1`)
-- Optional limits (defaults): `DR_MAX_SUBTASKS=8`, `DR_MAX_STEPS=30` (Bonsai tool calls per loop),
+- Optional limits (defaults): `DR_MAX_SUBTASKS=8`, `DR_MAX_DELEGATIONS=6` (main-agent hand-offs per loop),
+  `DR_PDF_STEPS=12`, `DR_WEB_STEPS=12` (tool calls per PDF/web agent call),
   `DR_MAX_RESTARTS=2` (extra loops after self-review), `DR_MAX_PAGES=150` (pages read per research),
   `DR_CONTEXT_TOKENS=12000` (compact the agent conversation past this),
   `DR_SEARCH_BACKENDS=yahoo,bing,brave,duckduckgo,google,mojeek,startpage` (search engines, merged),

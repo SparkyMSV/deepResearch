@@ -5,6 +5,7 @@ import re
 
 import openai
 
+from app.fields import cite
 from app.ctx import date_note
 from app.local_llm import parse_json
 from app.logs import clip
@@ -97,7 +98,7 @@ async def final_review(ctx, ask) -> None:
     for i, f in enumerate(rows, 1):
         head = f"[{i}] {f['name']} — {f['entity'] or 'any'}, {f['period']}: "
         if f["status"] == "found":
-            src = f"{f['source_key']} p.{f['page']}" if f["source_key"] else f["source_url"]
+            src = cite(dict(f))
             body = f"{f['value']} {f['unit'] or ''} ({src}) quote: \"{f['quote']}\""
         else:
             body = "not public" if f["status"] == "unavailable" else "not found"

@@ -5,7 +5,7 @@ import logging
 from app import agentkit, config, events, logs, pdf_agent, web_agent
 from app.ctx import date_note, new_state
 from app.db import insert
-from app.fields import all_fields, status_line
+from app.fields import all_fields, cite, status_line
 from app.local_llm import LocalModelError, local, parse_json
 from app.logs import clip
 
@@ -144,7 +144,7 @@ def _review_table(ctx, sub) -> str:
     for i, f in enumerate(all_fields(ctx.conn, sub["id"]), 1):
         head = f"[{i}] {f['name']} — {f['entity'] or 'any'}, {f['period']}: "
         if f["status"] == "found":
-            src = f"{f['source_key']} p.{f['page']}" if f["source_key"] else f["source_url"]
+            src = cite(dict(f))
             lines.append(head + f"{f['value']} {f['unit'] or ''} (reported period {f['reported_period'] or '?'}, "
                          f"{src}) quote: \"{f['quote']}\"" + (" [accepted]" if f["accepted"] else ""))
         else:

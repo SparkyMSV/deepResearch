@@ -11,6 +11,14 @@ log = logging.getLogger(__name__)
 MIN_QUOTE = 12
 
 
+def cite(f: dict) -> str:
+    """'D1 p.152 (printed 150)' for documents (PDF page first: what a PDF viewer shows), else the URL."""
+    if not f.get("source_key"):
+        return f.get("source_url") or ""
+    printed = f" (printed {f['printed_page']})" if f.get("printed_page") and f["printed_page"] != f.get("page") else ""
+    return f"{f['source_key']} p.{f['page']}{printed}"
+
+
 def all_fields(conn, subtask_id: int) -> list[dict]:
     """Every field of a sub-task in a stable order: the agent's numbering [1], [2], …"""
     return [dict(r) for r in conn.execute("select * from fields where subtask_id=? order by id", (subtask_id,))]

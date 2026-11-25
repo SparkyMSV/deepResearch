@@ -25,7 +25,9 @@ const closed = (f) => !!f.accepted
 const DOC = { not_found: '✗ not found', planned: '… searching' }
 const host = (u) => { try { return new URL(u).host } catch { return u || '' } }
 const safe = (u) => (/^https?:\/\//.test(u || '') ? u : undefined)
-const source = (f) => (f.source_key ? `${f.source_key}${f.page ? ` p.${f.page}` : ''}` : host(f.source_url))
+const source = (f) => (f.source_key
+  ? `${f.source_key}${f.page ? ` p.${f.page}` : ''}${f.printed_page && f.printed_page !== f.page ? ` (printed ${f.printed_page})` : ''}`
+  : host(f.source_url))
 function fieldState(f) {
   if (f.status === 'unavailable') return f.accepted ? `not public: ${f.note || ''}`.trim() : 'not public? (unreviewed)'
   if (f.accepted === 2) return '✓ confirmed'

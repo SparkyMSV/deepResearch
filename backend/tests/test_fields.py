@@ -78,3 +78,9 @@ def test_record_markdown_table_quote(env):
     c, sub = env
     src = dict(SRC, text=TABLE)
     assert fields.record(c, sub, 1, "2.1", "%", "", "Gross NPA 2.1%", src).startswith("recorded")
+
+
+def test_cite_shows_pdf_and_printed_page():
+    assert fields.cite({"source_key": "D1", "page": 152, "printed_page": 150, "source_url": "u"}) == "D1 p.152 (printed 150)"
+    assert fields.cite({"source_key": "D1", "page": 4, "printed_page": None, "source_url": "u"}) == "D1 p.4"
+    assert fields.cite({"source_key": None, "page": None, "printed_page": None, "source_url": "http://x"}) == "http://x"

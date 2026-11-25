@@ -88,4 +88,11 @@ describe('TaskChecklist', () => {
     expect(screen.getByText('✓ confirmed')).toBeTruthy()
     expect(screen.getByText('✓ checked locally')).toBeTruthy()
   })
+
+  it('shows printed page in source', () => {
+    const fields = [{ id: 1, subtask_id: 2, name: 'Debt', period: 'FY26', status: 'found', accepted: 1, value: '6,100', unit: 'crore', source_key: 'D1', page: 152, printed_page: 150 }]
+    render(<TaskChecklist task={{ ...task('running', [sub({})]), fields }} />)
+    fireEvent.click(screen.getByText('Find prices'))
+    expect(screen.getByText('D1 p.152 (printed 150)')).toBeTruthy()
+  })
 })

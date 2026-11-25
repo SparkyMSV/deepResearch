@@ -8,6 +8,7 @@ import openai
 
 from app import agent, config, docs, events, final, logs
 from app.cloud_llm import QuotaExhausted, cloud, on_fallback
+from app.fields import cite
 from app.ctx import TaskCtx
 from app.db import insert, update
 from app.pdf import PdfStore
@@ -178,7 +179,7 @@ def _report_input(conn, t: dict, today: str) -> str:
         for f in conn.execute("select * from fields where subtask_id=? order by id", (st["id"],)).fetchall():
             head = f"- {f['name']} ({f['entity'] or 'any'}, {f['period']})"
             if f["value"] and f["status"] == "found":
-                src = f"{f['source_key']} p.{f['page']}" if f["source_key"] else f["source_url"]
+                src = cite(dict(f))
                 parts.append(f"{head}: {f['value']} {f['unit'] or ''} [reported period: {f['reported_period'] or '?'}]"
                              f" source: {src} | {LEVELS[f['accepted'] or 0]} | quote: "
                              f"\"{f['quote']}\"")
