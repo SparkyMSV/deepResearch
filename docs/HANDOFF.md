@@ -1,7 +1,7 @@
 # Handoff — deep research harness (for the next agent)
 
-Written 2026-11-25. Read this, then `README.md`, then the latest spec
-(`docs/superpowers/specs/2026-11-25-specialist-agents-design.md`).
+Written 2026-11-25, updated 2026-11-26. Read this, then `README.md` (its roadmap checklist is the to-do list), then
+`docs/eval/2026-11-26-mtplx-speed.md` and the latest spec (`docs/superpowers/specs/2026-11-25-specialist-agents-design.md`).
 
 ## What this is
 
@@ -13,11 +13,11 @@ they are easy to verify.
 
 ## State of the repo
 
-- Branch **`feat/bonsai-harness`**, 47 commits ahead of local `main`; **not merged, not pushed**. Local `main` is
-  itself ahead of `origin/main` (GitHub `SparkyMSV/deepResearch`). Merge/push **only when the user asks**.
-- Backend tests: `cd backend && perl -e 'alarm 300; exec @ARGV' python -m pytest -q` → **212 passed** (macOS has
+- `feat/bonsai-harness` was merged into `main` and pushed to GitHub (`SparkyMSV/deepResearch`) on 2026-11-26, at the
+  user's request. Merge or push again **only when the user asks**.
+- Backend tests: `cd backend && perl -e 'alarm 300; exec @ARGV' python -m pytest -q` → **213 passed** (macOS has
   no `timeout`; always read the summary line, never a filtered tail). Frontend: `cd frontend && npx vitest run`.
-- Untracked `package-lock.json` at the repo root: leave it alone.
+- Untracked `package-lock.json` at the repo root and `notebooks/`: leave them alone.
 
 ## Current model setup (decided 2026-11-25)
 
@@ -26,7 +26,7 @@ window **32768**. Bonsai 2 27B (port 8001) was tested on the same harness and dr
 for the 4B, and memory pauses with both loaded. The user may later try Bonsai 2.5; no code change is needed for a
 model swap (the harness reads the model id from the server).
 
-Settings used for the 4B (env vars; **not yet the defaults** in `config.py`/`.env.example`):
+Settings for the 4B (the defaults in `config.py` and `.env.example` since 2026-11-26):
 
 ```
 DR_RESEARCH_URL=http://127.0.0.1:8002/v1
@@ -36,11 +36,12 @@ DR_WEB_STEPS=20
 DR_THINK_TOKENS=1200      # planning-call thinking budget
 ```
 
-Start the model server with the SSD session cache **off** (it wrote ~23 GB/hour; the user had it cleared):
+Start the model server with the SSD session cache **off** (it wrote ~23 GB/hour; the user had it cleared) and the
+**`turbo` profile** (10-35% faster decode than the app's default `sustained`; see the speed report):
 
 ```
 ~/.mtplx/bin/mtplx serve --model Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed --host 127.0.0.1 --port 8002 \
-  --no-auth --context-window 32768 --ssd-session-cache off
+  --no-auth --context-window 32768 --ssd-session-cache off --profile turbo
 ```
 
 The user runs MTPLX from the MTPLX app; don't kill their servers. Ask them to restart one when needed.
@@ -96,19 +97,26 @@ Known-answer tests (both pass on the 4B):
 
 ## Open items (in rough priority)
 
-1. Make the 4B settings the defaults (`config.py`, `.env.example`, README run section incl. `--ssd-session-cache off`).
-2. Measure SSD writes per minute of a research run with the cache off (sampler: per-process `proc_pid_rusage`
-   bytes written + `ioreg` disk total; it was in the session scratchpad as `diskwrites.py`).
-3. Report cites the **planned** document name instead of what verification found (`about`); drop boilerplate like
-   "all figures add up" when there are no identity checks.
-4. Indian PDFs render ₹ as a backtick (units come out as "` Mn"); normalise.
-5. Wider tests: policy (India fiscal deficit from budget documents), then a multi-field report (e.g. the full
-   "investment report for Mindspace debt bonds"), and the user's "market viability of a product" case.
-6. Planner still makes short checklists (Flash-Lite ignored "15–30 fields"); if needed, make the plan JSON list
-   report sections first, then fields per section.
+The full list is the **roadmap checklist at the end of `README.md`**. The first ones to do:
+
+1. **Planner outputs the report structure first** (agreed with the user, not built). The plan call lists the final
+   report's sections in the JSON before the fields, then the fields each section needs. It's one call and
+   automatic (no approval step). Store the sections (a structure column on tasks, a `section` label on fields) and
+   pass the same outline to the report writer. Fields keep their **source-based** sub-tasks; don't regroup by
+   section. Watch the 40-field cap leaving sections empty. Touches `plan.py`, `db.py`, `task.py`
+   (`REPORT_PROMPT`), plan tests.
+2. **Speed:** thinking-only planning calls are 28% of model time (32 calls averaging 19 s, empty answers);
+   no-tool text replies are another 28%; web searches take 15-30 s each. See `docs/eval/2026-11-26-mtplx-speed.md`.
+3. **Self-review quality** (from the NABKISAN live run): it rejected NABARD's 89.12% for a wrong reason and accepted
+   total borrowings as "bonds outstanding".
+4. New file abilities the user wants later: **XLSX reading, XLSX writing, PDF writing** (report export).
+5. Report cites the planned document name instead of what verification found (`about`); ₹ rendered as a backtick.
+6. Measure SSD writes per minute with the SSD cache off (sampler: per-process `proc_pid_rusage` bytes written +
+   `ioreg` disk total).
 7. Parked by the user: reviewers flagging second-hand sources; a LoRA fine-tune of the 4B on its own accepted
-   traces (not on Parallel AI outputs — their terms forbid it).
-8. The user's backend on 8765 runs old code: it needs a restart to pick up all of this.
+   traces (not on Parallel AI outputs: their terms forbid it).
+8. The user stopped their MTPLX server on 8002 on 2026-11-26. Start it with the command above when needed. Their
+   backend on 8765 runs old code until restarted.
 
 ## Gotchas
 

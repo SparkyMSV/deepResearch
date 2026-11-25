@@ -67,7 +67,7 @@ def test_new_columns():
 
 
 def test_settings_specialists():
-    assert (config.MAX_DELEGATIONS, config.PDF_STEPS, config.WEB_STEPS) == (6, 12, 12)
+    assert (config.MAX_DELEGATIONS, config.PDF_STEPS, config.WEB_STEPS) == (6, 20, 20)
 
 
 def test_old_database_gets_new_columns(tmp_path):

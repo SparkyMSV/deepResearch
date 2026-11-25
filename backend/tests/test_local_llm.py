@@ -69,7 +69,7 @@ def test_routes_roles_to_servers(fakes):
     assert asyncio.run(local("chat", [{"role": "user", "content": "x"}])).content == "hi"
     assert asyncio.run(local("research", [{"role": "user", "content": "x"}])).content == "deep"
     assert made["chat"].calls[0]["model"] == "chat-model" and made["research"].calls[0]["model"] == "research-model"
-    assert config.RESEARCH_URL.endswith(":8001/v1") and config.CHAT_URL.endswith(":8002/v1")
+    assert config.RESEARCH_URL.endswith(":8002/v1") and config.CHAT_URL.endswith(":8002/v1")
 
 
 def test_thinking_off_unless_asked(fakes):
