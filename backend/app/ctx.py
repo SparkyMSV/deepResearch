@@ -20,6 +20,7 @@ class TaskCtx:
     store: object  # PdfStore
     inflight: dict[str, asyncio.Future] = field(default_factory=dict)  # PDF url -> verification in progress
     pages_used: int = 0
+    search_history: list = field(default_factory=list)  # research-wide web searches, for the web agent
 
     def pages_left(self) -> bool:
         return self.pages_used < config.MAX_PAGES
