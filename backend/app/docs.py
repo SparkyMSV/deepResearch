@@ -54,9 +54,10 @@ async def _verify(ctx, url: str, expect: dict, about_entity: bool) -> dict | Non
         log.warning("verify %s: unreadable: %r", url, e)
         return None
     # who it's about decides; type and period are judged later from the values (strict checks rejected good PDFs)
-    ask = (f"Is this PDF about {expect['issuer']}?" if about_entity else
+    itself = " itself (not a subsidiary, parent, sponsor or other related company)"
+    ask = (f"Is this PDF about {expect['issuer']}{itself}?" if about_entity else
            f"Wanted: a {expect['type']} about {expect['issuer']} (ideally {expect['period']}). Is this PDF about "
-           f"{expect['issuer']} and of that kind? Another year is fine.")
+           f"{expect['issuer']}{itself} and of that kind? Another year is fine.")
     d = await _ask(f"Start of a PDF ({n} pages):\n{text[:DESCRIBE_CHARS + 1500]}\n\n{ask} The first page may be a "
                    "cover letter or a filing intimation to a stock exchange; judge and describe the document it "
                    "encloses. Reply JSON only: "

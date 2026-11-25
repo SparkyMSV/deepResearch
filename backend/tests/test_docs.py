@@ -169,3 +169,12 @@ def test_verify_records_the_period_the_document_covers(monkeypatch):
     r = asyncio.run(docs.verify(c, NAVI, {"issuer": "Navi Finserv Limited", "type": "rating rationale",
                                           "period": "FY2025-26"}))
     assert r["period"] == "April 2025"
+
+
+def test_verify_asks_about_the_entity_itself_not_a_related_company(monkeypatch):
+    store = FakeStore({NAVI: ["CARE Ratings: K Raheja IT Park (Hyderabad) Limited bank facilities " * 20]})
+    q = ScriptedQwen(("not a subsidiary", {"match": False}))
+    c, _ = make(monkeypatch, store, q)
+    assert asyncio.run(docs.verify(c, NAVI, {"issuer": "Mindspace REIT", "type": "rating rationale",
+                                             "period": "FY2025-26"})) is None
+    assert "not a subsidiary" in q.prompts[0]

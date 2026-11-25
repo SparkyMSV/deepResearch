@@ -7,7 +7,7 @@ from app import agentkit, docs, events, web_agent
 from app.ctx import TaskCtx, new_state
 from app.db import Hit, connect, insert
 from app.local_llm import Reply
-from tests.fakes import FakeStore, Script, ScriptedQwen, call
+from tests.fakes import FakeStore, Script, ScriptedQwen, call, tool_out
 
 HITS = [Hit("Nexus Select Trust results FY26", "http://a.com/r", "debt"), Hit("Other", "http://b.com/x", "")]
 PAGE = "Nexus Select Trust: total borrowings were Rs 6,100 crore as of March 2026."
@@ -57,7 +57,7 @@ def test_repeat_refused_research_wide(env, monkeypatch):
                              "recorded": [], "note": ""})
     s = Script(Reply("", [call("search", query="Nexus Select Trust total debt FY2026")], 300), END)
     run(env, s, monkeypatch)
-    assert "already tried" in s.sent[1]["messages"][-1]["content"]
+    assert "already tried" in tool_out(s.sent[1])
 
 
 def test_open_pdf_becomes_document_and_continues(env, monkeypatch):
@@ -69,7 +69,7 @@ def test_open_pdf_becomes_document_and_continues(env, monkeypatch):
     s = Script(Reply("", [call("search", query="nexus annual report pdf")], 300),
                Reply("", [call("open", n=1)], 300), END)
     out = run(env, s, monkeypatch)
-    assert "added as D1" in s.sent[2]["messages"][-1]["content"] and "new document D1" in out
+    assert "added as D1" in tool_out(s.sent[2]) and "new document D1" in out
 
 
 def test_not_helpful_remark_and_missing(env, monkeypatch):

@@ -7,7 +7,7 @@ from app import agent, config, events
 from app.ctx import TaskCtx, new_state
 from app.db import connect, insert
 from app.local_llm import Reply
-from tests.fakes import FakeStore, Script, call
+from tests.fakes import FakeStore, Script, call, tool_out
 
 AR = "http://navi.com/ar.pdf"
 PAGES = ["Cover", "Contents", "Asset quality: Gross NPA was 2.1% and Net NPA was 0.9% in FY2025-26."] + [f"p{i}" for i in range(4, 13)]
@@ -127,7 +127,7 @@ def test_main_delegates_and_appends_reports(env, monkeypatch):
     s = Script(Reply("", [call("explore_document", doc="D1", fields=[1, 2], goal="asset quality")], 500),
                Reply("", [call("done", note="x")], 500))
     assert main(env, s, monkeypatch) == "done"
-    assert calls == [("pdf", "D1", [1, 2])] and "PDF agent on D1: done" in s.sent[1]["messages"][-1]["content"]
+    assert calls == [("pdf", "D1", [1, 2])] and "PDF agent on D1: done" in tool_out(s.sent[1])
     assert rounds[0] == "→ PDF D1: Gross NPA %, Net NPA %"
 
 
@@ -138,7 +138,7 @@ def test_delegation_budget(env, monkeypatch):
     s = Script(Reply("", [call("search_web", fields=[1], goal="g")], 500),
                Reply("", [call("search_web", 1, fields=[2], goal="g")], 500), Reply("", [call("done")], 500))
     main(env, s, monkeypatch)
-    assert "budget" in s.sent[2]["messages"][-1]["content"]
+    assert "budget" in tool_out(s.sent[2])
 
 
 def test_not_public_guard_refuses_then_allows(env, monkeypatch):
@@ -150,7 +150,7 @@ def test_not_public_guard_refuses_then_allows(env, monkeypatch):
                Reply("", [call("explore_document", doc="D1", fields=[1], goal="g")], 500),
                Reply("", [call("mark_not_public", 2, field=1, reason="not disclosed")], 500), Reply("", [call("done")], 9))
     main(env, s, monkeypatch)
-    assert "refused" in s.sent[1]["messages"][-1]["content"] and "PDF agent" in s.sent[3]["messages"][-1]["content"]
+    assert "refused" in tool_out(s.sent[1]) and "PDF agent" in tool_out(s.sent[3])
     assert c.conn.execute("select status from fields where name='Gross NPA %'").fetchone()[0] == "unavailable"
 
 

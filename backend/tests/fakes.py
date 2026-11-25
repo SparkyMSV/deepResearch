@@ -1,6 +1,8 @@
 """Shared fakes: an in-memory PDF store and a scripted Qwen."""
 import json
 
+from app.local_llm import Reply
+
 from app.pdf import Contents, norm
 
 
@@ -76,12 +78,17 @@ class Script:
     """Fake local(): scripted Replies (or callables taking on_wait), recording what was sent."""
 
     def __init__(self, *replies, default=None):
-        self.replies, self.sent, self.default = list(replies), [], default
+        self.replies, self.sent, self.plans, self.default = list(replies), [], [], default
 
     async def __call__(self, role, messages, tools=None, max_tokens=800, think=False, on_token=None, on_wait=None,
                        max_wait=None):
         import json as _json
-        self.sent.append({"role": role, "messages": _json.loads(_json.dumps(messages)), "think": think, "tools": tools})
+        from app.agentkit import PLAN_ASK, REPLAN_ASK
+        entry = {"role": role, "messages": _json.loads(_json.dumps(messages)), "think": think, "tools": tools}
+        if messages and messages[-1].get("content") in (PLAN_ASK, REPLAN_ASK):  # an agent's planning call
+            self.plans.append(entry)
+            return Reply("PLAN: look in the borrowings note", [], 10)
+        self.sent.append(entry)
         r = self.replies.pop(0) if self.replies else self.default
         if callable(r):
             r = r(on_wait)
@@ -90,3 +97,9 @@ class Script:
 
 def call(name, i=0, **args):
     return {"id": f"c{name}{i}", "name": name, "args": args}
+
+
+def tool_out(sent: dict) -> str:
+    """The latest tool result an agent saw in a request (planning messages may follow it)."""
+    return next((m["content"] for m in reversed(sent["messages"]) if m.get("role") == "tool"),
+                sent["messages"][-1]["content"])

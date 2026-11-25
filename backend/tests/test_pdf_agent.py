@@ -6,7 +6,7 @@ from app import agentkit, config, events, pdf_agent
 from app.ctx import TaskCtx, new_state
 from app.db import connect, insert
 from app.local_llm import Reply
-from tests.fakes import FakeStore, Script, call
+from tests.fakes import FakeStore, Script, call, tool_out
 
 U = "http://x/ar.pdf"
 TOC = [("Directors report", 4), ("Financial statements", 10), ("Notes to accounts", 15), ("Risk management", 20),
@@ -53,7 +53,7 @@ def test_locate_then_read_then_record(env, monkeypatch):
                Reply("", [call("read_pages", **{"from": 12, "to": 12})], 900),
                Reply("", [call("record_value", field=1, value="6,100", unit="crore", quote=Q, page=12)], 1500), END)
     out, rounds = run(env, s, monkeypatch)
-    assert "p.12 (Financial statements)" in s.sent[1]["messages"][-1]["content"]
+    assert "p.12 (Financial statements)" in tool_out(s.sent[1])
     f = env[0].conn.execute("select value, page, printed_page from fields where name='Total Debt'").fetchone()
     assert tuple(f) == ("6,100", 14, 12)
     assert rounds[:3] == ["D1 locate total borrowings", "D1 pp. 12", "recorded Total Debt = 6,100 crore"]
@@ -64,16 +64,16 @@ def test_record_refused_from_snippet_only(env, monkeypatch):
     s = Script(Reply("", [call("locate", query="total borrowings")], 500),
                Reply("", [call("record_value", field=1, value="6,100", unit="crore", quote=Q, page=12)], 900), END)
     run(env, s, monkeypatch)
-    assert "read the page first" in s.sent[2]["messages"][-1]["content"]
+    assert "read the page first" in tool_out(s.sent[2])
 
 
 def test_read_pages_max_two_and_reread_refused(env, monkeypatch):
     s = Script(Reply("", [call("read_pages", **{"from": 5, "to": 9})], 500),
                Reply("", [call("read_pages", 1, **{"from": 5, "to": 5})], 500), END)
     run(env, s, monkeypatch)
-    first = s.sent[1]["messages"][-1]["content"]
+    first = tool_out(s.sent[1])
     assert "[page 5]" in first and "[page 6]" in first and "[page 7]" not in first
-    assert "already read page 5" in s.sent[2]["messages"][-1]["content"]
+    assert "already read page 5" in tool_out(s.sent[2])
 
 
 def test_compaction_keeps_recording_possible(env, monkeypatch):
@@ -117,7 +117,7 @@ def test_same_printed_page_in_two_sections(env, monkeypatch):
                Reply("", [call("record_value", field=1, value="6,100", unit="crore", quote=Q, page=2,
                                section="Consolidated statements")], 500), END)
     run(env, s, monkeypatch)
-    assert "already read" not in s.sent[2]["messages"][-1]["content"]
+    assert "already read" not in tool_out(s.sent[2])
     assert tuple(c.conn.execute("select page, printed_page from fields where name='Total Debt'").fetchone()) == (21, 2)
 
 
@@ -132,7 +132,7 @@ def test_spread_pages_read_once_with_both_halves(env, monkeypatch):
     s = Script(Reply("", [call("read_pages", **{"from": 14, "to": 15})], 900),
                Reply("", [call("record_value", field=1, value="6,100", unit="crore", quote=Q, page=15)], 1500), END)
     out, _ = run(env, s, monkeypatch)
-    read = s.sent[1]["messages"][-1]["content"]
+    read = tool_out(s.sent[1])
     assert "[pages 14-15]" in read and "6,100 crore" in read and "15" not in read.split("[pages 14-15]")[0]
     f = c.conn.execute("select value, page, printed_page from fields where name='Total Debt'").fetchone()
     assert tuple(f) == ("6,100", 9, 15)
@@ -162,7 +162,7 @@ def test_record_from_table_row_and_column(env, monkeypatch):
     run(env, s, monkeypatch)
     f = c.conn.execute("select value, unit, reported_period, quote from fields where name='Total Debt'").fetchone()
     assert tuple(f) == ("1,18,210.52", "₹ Mn", "As at March 31, 2026", "Adjusted net debt ... 1,18,210.52")
-    assert "several rows match" in s.sent[3]["messages"][-1]["content"]
+    assert "several rows match" in tool_out(s.sent[3])
 
 
 def test_list_notes_tool(env, monkeypatch):
@@ -174,9 +174,9 @@ def test_list_notes_tool(env, monkeypatch):
     s = Script(Reply("", [call("list_notes", section="Financial statements")], 500),
                Reply("", [call("list_notes", section="Nowhere")], 600), END)
     run(env, s, monkeypatch)
-    assert "17 BORROWINGS — p.11" in s.sent[1]["messages"][-1]["content"]
-    assert "19 CAPITAL MANAGEMENT — p.12" in s.sent[1]["messages"][-1]["content"]
-    assert "Financial statements" in s.sent[2]["messages"][-1]["content"]  # lists the sections that have notes
+    assert "17 BORROWINGS — p.11" in tool_out(s.sent[1])
+    assert "19 CAPITAL MANAGEMENT — p.12" in tool_out(s.sent[1])
+    assert "Financial statements" in tool_out(s.sent[2])  # lists the sections that have notes
 
 
 def test_table_past_the_shown_text_still_readable(env, monkeypatch):
@@ -204,7 +204,11 @@ def test_thinks_on_the_first_turn_and_after_a_failure(env, monkeypatch):
                Reply("", [call("record_value", field=1, value="1", quote="not on any page read", page=12)], 600),
                Reply("", [call("locate", query="borrowings note")], 700), END)
     run(env, s, monkeypatch)
-    assert [x["think"] for x in s.sent] == [True, False, True, False]
+    # a planning call (thinking on, no tools) before the first turn and after the failed record_value
+    assert len(s.plans) == 2 and all(p["think"] and p["tools"] is None for p in s.plans)
+    assert not any(x["think"] for x in s.sent)
+    assert "PLAN: look in the borrowings note" in str(s.sent[0]["messages"])
+    assert "not on any page read" in str(s.plans[1]["messages"])  # re-plan after the rejected record
 
 
 def test_prompt_is_research_minded_and_has_no_literal_query_example(env, monkeypatch):
@@ -222,7 +226,7 @@ def test_page_removed_by_compaction_is_shown_again(env, monkeypatch):
                Reply("", [call("read_pages", 1, **{"from": 13, "to": 13})], 900),
                Reply("", [call("read_pages", 2, **{"from": 12, "to": 12})], 900), END)
     run(env, s, monkeypatch)
-    again = s.sent[3]["messages"][-1]["content"]
+    again = tool_out(s.sent[3])
     assert "[page 12]" in again and "6,100 crore" in again
     assert c.pages_used == 2  # shown again, not read again
 
@@ -230,7 +234,7 @@ def test_page_removed_by_compaction_is_shown_again(env, monkeypatch):
 def test_capped_read_says_where_to_continue(env, monkeypatch):
     s = Script(Reply("", [call("read_pages", **{"from": 5, "to": 9})], 500), END)
     run(env, s, monkeypatch)
-    assert "next: read_pages(from=7" in s.sent[1]["messages"][-1]["content"]
+    assert "next: read_pages(from=7" in tool_out(s.sent[1])
 
 
 def test_new_call_on_a_document_sees_earlier_calls(env, monkeypatch):
