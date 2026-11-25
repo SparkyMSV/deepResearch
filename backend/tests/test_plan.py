@@ -83,3 +83,8 @@ def test_field_cap_never_leaves_empty_subtasks(monkeypatch):
     empty = conn.execute("select count(*) from subtasks s where not exists "
                          "(select 1 from fields f where f.subtask_id=s.id)").fetchone()[0]
     assert empty == 0
+
+
+def test_prompt_plans_a_complete_answer_sized_to_the_request():
+    p = plan.PLAN_PROMPT
+    assert "small model" not in p and "complete answer" in p and "15-30" in p and "same source" in p

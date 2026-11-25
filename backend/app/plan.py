@@ -13,17 +13,20 @@ log = logging.getLogger(__name__)
 MAX_FIELDS_PER_SUBTASK, MAX_FIELDS, MAX_DOCUMENTS = 8, 40, 6
 
 PLAN_PROMPT = (
-    "{note} Plan research for the objective as a checklist a small model will fill. "
-    "Split it into at most {n} sub-tasks. Each sub-task lists fields: specific figures (number + unit) or short "
-    "facts, each for a named entity and period. Prefer the latest complete period available as of today. "
-    "For figures prefer official documents (annual report, audited results, filings, rating rationales, "
-    "government statistics) and list them as documents with the sites likely to host them. A document's issuer "
+    "{note} Design the research for the objective; research agents will fill your checklist. First decide what a "
+    "complete answer looks like for this kind of request (the sections a finished report on it would have), then "
+    "list the fields each section needs: specific figures (number + unit) or short facts, each for a named entity "
+    "and period. Size it to the request: a narrow question needs a few fields, a full report or analysis 15-30 "
+    "covering every section. Split it into at most {n} sub-tasks, grouping fields that come from the same source. "
+    "Prefer the latest complete period available as of today. For figures prefer first-hand sources (official "
+    "reports, filings, regulators, statistics, research papers) and list them as documents with the sites likely "
+    "to host them. A document's issuer "
     "is the company it is about (for a rating rationale, the rated company, not the agency). Qualitative "
     "questions become short-fact fields. Don't plan fields that need private data. Reply with JSON only: "
     '{{"documents":[{{"key":"D1","name":"...","issuer":"...","type":"annual report","period":"FY2025-26",'
     '"search":"web search query","domains":["example.com"]}}],"subtasks":[{{"objective":"...","fields":[{{'
     '"name":"Gross NPA %","entity":"...","period":"FY2025-26","kind":"figure|fact","sources":["D1"],'
-    '"search":"web search query","hint":"where this value usually appears"}}]}}]}}'
+    '"search":"web search query","hint":"where this value usually appears and what sources call it"}}]}}]}}'
 )
 
 
