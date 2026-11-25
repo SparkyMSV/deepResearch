@@ -314,3 +314,17 @@ def test_mtplx_no_tools_notice_is_not_a_plan(env, monkeypatch):
     run(env, notice, monkeypatch)
     sent = str(s.sent[0]["messages"])
     assert "MTPLX" not in sent and "ratios note" in sent
+
+
+def test_value_found_on_another_page_read_in_this_call_is_recorded_there(env, monkeypatch):
+    from tests.test_tables import SERIAL
+    c, sub = env
+    ps = pages()
+    ps[13] = SERIAL  # printed 12
+    c.store = FakeStore({U: ps}, {U: TOC})
+    s = Script(Reply("", [call("read_pages", **{"from": 12, "to": 13})], 900),
+               Reply("", [call("record_value", field=1, value="3.17", page=13,  # cites the neighbouring page
+                               row="Interest service coverage ratio (in times)")], 1500), END)
+    run(env, s, monkeypatch)
+    f = c.conn.execute("select value, page, printed_page from fields where name='Total Debt'").fetchone()
+    assert tuple(f) == ("3.17", 14, 12)

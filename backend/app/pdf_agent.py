@@ -6,8 +6,9 @@ from collections import Counter
 from app import agentkit, config, docprep, tables
 from app.ctx import date_note
 from app.docs import page_ranges
-from app.fields import all_fields, record
+from app.fields import _why_not, all_fields, record
 from app.logs import clip
+from app.pdf import norm
 
 log = logging.getLogger(__name__)
 
@@ -162,15 +163,22 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
             if isinstance(pdf, list):  # ambiguous without a section: the page read in this call, if only one
                 hits = [k for k, v in read.items() if v["printed"] == p]
                 pdf = hits[0] if len(hits) == 1 else None
+            value, period, quote = str(a.get("value") or ""), str(a.get("period") or ""), str(a.get("quote") or "")
+            # a row label (given as row, column or quote) plus the value: check that row holds it, quote it. The
+            # cited page first, then the other pages read in this call (small models often cite the wrong one).
+            labels = [str(a[k]) for k in ("row", "column", "quote") if a.get(k)]
+            hit, cited = None, pdf
+            for k in ([pdf] if pdf in read else []) + [k for k in reversed(read) if k != pdf]:
+                hit = next((c for lb in labels if value and not (c := tables.row_value(read[k]["text"], lb, value)).error),
+                           None)
+                if hit or (value and quote and not _why_not(value, quote, norm(read[k]["text"]))):
+                    if k != cited:  # found on another page read in this call: cite that one
+                        pdf, p = k, read[k]["printed"]
+                    break
             if pdf not in read:
                 return f"rejected: read the page first with read_pages (page {p} hasn't been read in full)"
             src = {"url": doc["url"], "title": doc["name"], "key": doc["key"], "page": pdf, "kind": "doc",
                    "text": read[pdf]["text"]}
-            value, period, quote = str(a.get("value") or ""), str(a.get("period") or ""), str(a.get("quote") or "")
-            # a row label (given as row, column or quote) plus the value: check that row holds it, quote it
-            labels = [str(a[k]) for k in ("row", "column", "quote") if a.get(k)]
-            hit = next((c for lb in labels if value and not (c := tables.row_value(read[pdf]["text"], lb, value)).error),
-                       None)
             if hit:
                 value, period, quote = hit.value, period or hit.column, hit.quote
             elif a.get("row"):  # the harness reads the number, so it can't be mistyped

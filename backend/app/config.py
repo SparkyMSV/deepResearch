@@ -49,6 +49,7 @@ MAX_DELEGATIONS = _positive_int("DR_MAX_DELEGATIONS", 6)  # main agent hand-offs
 PDF_STEPS = _positive_int("DR_PDF_STEPS", 12)  # tool calls per PDF-agent call
 WEB_STEPS = _positive_int("DR_WEB_STEPS", 12)  # tool calls per web-agent call
 CONTEXT_TOKENS = _positive_int("DR_CONTEXT_TOKENS", 12000)  # compact the agent conversation past this
+THINK_TOKENS = _positive_int("DR_THINK_TOKENS", 3000)  # thinking budget of an agent's planning call
 RESEARCH_URL = os.environ.get("DR_RESEARCH_URL", "").strip() or "http://127.0.0.1:8001/v1"  # Bonsai on MTPLX
 CHAT_URL = os.environ.get("DR_CHAT_URL", "").strip() or "http://127.0.0.1:8002/v1"  # Qwen 3.5 4B on MTPLX
 SEARCH_BACKENDS = os.environ.get("DR_SEARCH_BACKENDS", "").strip() or \

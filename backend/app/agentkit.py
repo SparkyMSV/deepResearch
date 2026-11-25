@@ -10,7 +10,7 @@ from app.logs import clip
 
 log = logging.getLogger(__name__)
 
-MAX_CALLS_PER_TURN, REPLY_TOKENS, THINK_TOKENS = 3, 1000, 3000
+MAX_CALLS_PER_TURN, REPLY_TOKENS = 3, 1000
 # Bonsai doesn't think when tools are offered, so planning is a separate call with thinking on and no tools
 PLAN_ASK = ("Before using tools, plan in a few lines: what each item means, what this source would call it (other "
             "names, abbreviations), where it most likely is (which part, then which section, note or table), and "
@@ -62,7 +62,7 @@ async def loop(ctx, sub, msgs: list[dict], tools: list[dict], handle, max_steps:
             ask = PLAN_ASK if plans == 0 else REPLAN_ASK
             plans += 1
             try:
-                p = await local("research", msgs + [{"role": "user", "content": ask}], max_tokens=THINK_TOKENS,
+                p = await local("research", msgs + [{"role": "user", "content": ask}], max_tokens=config.THINK_TOKENS,
                                 think=True, on_wait=wait)
                 said = re.sub(r"\[MTPLX:[^\]]*\]", "", p.content or "").strip()  # its "no tools here" notice
                 if (plan := said or clip(p.reasoning, 1500)):  # some models answer only in their thinking
