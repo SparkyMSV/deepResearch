@@ -30,13 +30,15 @@ def chars(msgs: list[dict]) -> int:
 
 
 async def loop(ctx, sub, msgs: list[dict], tools: list[dict], handle, max_steps: int, compact,
-               finish: tuple[str, ...]) -> tuple[str, dict | None]:
+               finish: tuple[str, ...], stop=None) -> tuple[str, dict | None]:
     """Run tools until a finishing tool is called (returns ("finished", its args)), the step budget is used
     ("steps"), the model stops using tools ("stalled") or the server errors twice ("error").
     handle(name, args) -> result text. compact(msgs) -> shorter msgs for the same task."""
     paused, wait = pauser(ctx, sub)
     steps = idle = tokens = sent = errors = 0
     while True:
+        if stop and stop():
+            return "closed", None
         if steps >= max_steps:
             return "steps", None
         # last request's size plus what was appended since (~3 chars per token); no count from the server: all

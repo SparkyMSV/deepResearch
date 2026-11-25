@@ -12,21 +12,30 @@ from tests.fakes import FakeStore
 
 PLAN = {"documents": [], "subtasks": [{"objective": "Asset quality", "fields": [
     {"name": "Gross NPA %", "entity": "Navi Finserv", "period": "FY2025-26", "kind": "figure"}]}]}
-NOT_PUBLIC = [Reply("", [{"id": "c1", "name": "mark_not_public", "args": {"field": 1, "reason": "not disclosed"}}], 100),
-              Reply('{"fields":[{"field":1,"action":"accept"}]}', [], 100)]
+MAIN = [Reply("", [{"id": "w", "name": "search_web", "args": {"fields": [1], "goal": "g"}}], 100),
+        Reply("", [{"id": "m", "name": "mark_not_public", "args": {"field": 1, "reason": "not disclosed"}}], 100),
+        Reply("", [{"id": "d", "name": "done", "args": {}}], 100)]
+ACCEPT = Reply('{"fields":[{"field":1,"action":"accept"}]}', [], 100)
 
 
 class Env:
-    def __init__(self, monkeypatch, cloud_replies=(), local_replies=None):
+    def __init__(self, monkeypatch, cloud_replies=()):
         self.conn = connect(":memory:")
         self.conv = insert(self.conn, "conversations", title="c")
         self.events, self.cloud_replies, self.prompts = [], list(cloud_replies), {}
-        self.local_replies = list(NOT_PUBLIC if local_replies is None else local_replies)
+        self.turn = 0
         monkeypatch.setattr(task, "QUOTA_RETRY_SECONDS", 0)
         monkeypatch.setattr(events, "publish", lambda conv_id, e: self.events.append(e))
         monkeypatch.setattr(task, "cloud", self.cloud)
         monkeypatch.setattr(task, "PdfStore", lambda: FakeStore({}))
         monkeypatch.setattr(agent, "local", self.local)
+        monkeypatch.setattr(agent.agentkit, "local", self.local)
+
+        async def web(ctx, sub, fields, goal, on_round):  # the web agent looked and found nothing
+            sub.setdefault("missing_web", set()).update(agent.all_fields(ctx.conn, sub["id"])[n - 1]["id"] for n in fields)
+            return "Web agent: recorded: nothing; missing: [1]"
+
+        monkeypatch.setattr(agent.web_agent, "search", web)
         monkeypatch.setattr(docs, "ddg", lambda q, n=None: [])
 
         async def plan_cloud(role, messages, conn):
@@ -37,9 +46,13 @@ class Env:
     def new_task(self, objective="obj"):
         return insert(self.conn, "tasks", conversation_id=self.conv, objective=objective, status="queued")
 
-    async def local(self, role, messages, **kw):
+    async def local(self, role, messages, tools=None, think=False, **kw):
         await asyncio.sleep(0)
-        return self.local_replies.pop(0) if self.local_replies else Reply("", [{"id": "d", "name": "done", "args": {}}], 10)
+        if think:  # self-review
+            return ACCEPT
+        r = MAIN[self.turn % len(MAIN)]
+        self.turn += 1
+        return r
 
     async def cloud(self, role, messages, conn):
         self.prompts.setdefault(role, []).append(messages[-1]["content"])
@@ -65,7 +78,7 @@ def test_run_task_end_to_end_with_fakes(monkeypatch):
 
 
 def test_second_research_waits_queued(monkeypatch):
-    env = Env(monkeypatch, local_replies=NOT_PUBLIC * 2)
+    env = Env(monkeypatch)
     a, b = env.new_task("first"), env.new_task("second")
 
     async def both():
@@ -135,6 +148,7 @@ def test_local_model_error_ends_only_the_subtask(monkeypatch):
         raise LocalModelError("local research model error 400: prompt too long")
 
     monkeypatch.setattr(agent, "local", broken)
+    monkeypatch.setattr(agent.agentkit, "local", broken)
     assert asyncio.run(task.run_task(env.conn, env.conv, env.new_task())) == "# Report"
     assert env.conn.execute("select status from subtasks").fetchone()[0] == "partial"
     assert not any(".env" in n for n in env.notes())

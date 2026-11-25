@@ -48,15 +48,14 @@ MAX_PAGES = _positive_int("DR_MAX_PAGES", 150)
 MAX_DELEGATIONS = _positive_int("DR_MAX_DELEGATIONS", 6)  # main agent hand-offs per loop
 PDF_STEPS = _positive_int("DR_PDF_STEPS", 12)  # tool calls per PDF-agent call
 WEB_STEPS = _positive_int("DR_WEB_STEPS", 12)  # tool calls per web-agent call
-MAX_STEPS = _positive_int("DR_MAX_STEPS", 30)  # retired with the specialist agents; kept until Task 6
 CONTEXT_TOKENS = _positive_int("DR_CONTEXT_TOKENS", 12000)  # compact the agent conversation past this
 RESEARCH_URL = os.environ.get("DR_RESEARCH_URL", "").strip() or "http://127.0.0.1:8001/v1"  # Bonsai on MTPLX
 CHAT_URL = os.environ.get("DR_CHAT_URL", "").strip() or "http://127.0.0.1:8002/v1"  # Qwen 3.5 4B on MTPLX
 SEARCH_BACKENDS = os.environ.get("DR_SEARCH_BACKENDS", "").strip() or \
     "yahoo,bing,brave,duckduckgo,google,mojeek,startpage"
-for _old in ("DR_ROUNDS_PER_LOOP",):
+for _old in ("DR_ROUNDS_PER_LOOP", "DR_MAX_STEPS"):
     if os.environ.get(_old):
-        log.info("%s is no longer used (the research agent uses DR_MAX_STEPS)", _old)  # pages Qwen may read per research (PDF and web)
+        log.info("%s is no longer used (see DR_MAX_DELEGATIONS, DR_PDF_STEPS, DR_WEB_STEPS)", _old)  # pages Qwen may read per research (PDF and web)
 
 SEARCH_MAX_RESULTS = _positive_int("DR_SEARCH_MAX_RESULTS", 8)  # every result is fetched and read
 # DuckDuckGo region code, e.g. in-en (India), us-en, uk-en, wt-wt (no region)

@@ -1,22 +1,31 @@
-"""Bonsai research agent: one sub-task is one tool loop over a fixed, cached opening."""
-import json
+"""Bonsai main agent: for each open field it decides once where to look and hands the work to the PDF agent
+or the web agent, then reviews its own values. One sub-task at a time."""
 import logging
-from urllib.parse import urlparse
 
-from app import config, events, logs
-from app.ctx import date_note
-from app.docs import page_ranges
-from app.fields import all_fields, status_line
-from app.ctx import new_state
+from app import agentkit, config, events, logs, pdf_agent, web_agent
+from app.ctx import date_note, new_state
 from app.db import insert
+from app.fields import all_fields, status_line
 from app.local_llm import LocalModelError, local, parse_json
 from app.logs import clip
-from app.tools import TOOLS, run_tool
 
 log = logging.getLogger(__name__)
 
-MAX_CALLS_PER_TURN, REPLY_TOKENS = 3, 1000
-NUDGE = "Use a tool, or call done."
+
+def _fn(name, desc, props, required):
+    return {"type": "function", "function": {"name": name, "description": desc, "parameters": {
+        "type": "object", "properties": props, "required": required}}}
+
+
+_S, _I, _L = {"type": "string"}, {"type": "integer"}, {"type": "array", "items": {"type": "integer"}}
+MAIN_TOOLS = [
+    _fn("explore_document", "Hand fields to the PDF agent to find in one document (by key, e.g. D1).",
+        {"doc": _S, "fields": _L, "goal": _S}, ["doc", "fields", "goal"]),
+    _fn("search_web", "Hand fields to the web agent to find on the web.", {"fields": _L, "goal": _S}, ["fields", "goal"]),
+    _fn("mark_not_public", "Say a field is not publicly available (only after the agents looked and reported it "
+        "missing).", {"field": _I, "reason": _S}, ["field", "reason"]),
+    _fn("done", "Finish this part.", {"note": _S}, []),
+]
 
 
 def _field_lines(conn, sub) -> list[str]:
@@ -25,85 +34,35 @@ def _field_lines(conn, sub) -> list[str]:
         head = f"[{i}] {f['name']} — {f['entity'] or 'any'}, {f['period']}"
         if f["accepted"]:
             lines.append(f"{head} — done, don't work on")
+            continue
+        state = f"recorded {f['value']} {f['unit'] or ''}".rstrip() if f["status"] == "found" else (
+            "marked not public" if f["status"] == "unavailable" else "open")
+        if f["id"] in recheck:
+            lines.append(f"{head} — {state} — reviewer asks to recheck: {f['hint'] or 'confirm or replace it'}")
         else:
-            state = f"recorded {f['value']} {f['unit'] or ''}".rstrip() if f["status"] == "found" else (
-                "marked not public" if f["status"] == "unavailable" else "open")
-            if f["id"] in recheck:
-                lines.append(f"{head} — {state} — reviewer asks to recheck: {f['hint'] or 'confirm or replace it'}")
-            else:
-                lines.append(head + (f" — hint: {f['hint']}" if f["hint"] else "") + f" — {state}")
+            lines.append(head + (f" — hint: {f['hint']}" if f["hint"] else "") + f" — {state}")
     return lines
 
 
 def opening(ctx, sub) -> list[dict]:
-    """The fixed start of every request in this loop (the server reuses it, so keep it unchanged)."""
-    rows = all_fields(ctx.conn, sub["id"])
-    first = next((f for f in rows if f["status"] == "open"), rows[0])
+    """Fixed start of the main agent's requests (the server reuses it)."""
     docs = ctx.docs()
-    eg_doc = docs[0]["key"] if docs else "D1"
     doc_lines = [f"{d['key']} {d['about'] or d['name']} — covers {d['covers'] or '?'} — {d['pages'] or '?'} pages"
-                 for d in docs] or ["none yet (search the web; PDFs you open become documents)"]
+                 + (" — has a contents page" if d.get("contents") not in (None, "", "[]") else "")
+                 for d in docs] or ["none yet"]
+    eg = docs[0]["key"] if docs else None
+    first = next((i for i, f in enumerate(all_fields(ctx.conn, sub["id"]), 1) if f["status"] == "open"), 1)
     text = (
-        f"You research one part of a report: {sub['objective']}. Fill the fields below using the tools.\n"
-        f"{date_note(ctx.today)}\n"
-        "How to work:\n"
-        f'- Prefer documents for figures: pdf_find(doc="{eg_doc}", terms=["{first["name"].lower()}"]), then '
-        "pdf_page on the best pages. Use search and open_result when no document has the value.\n"
-        "- After reading a page, call record_value for every field value on it, quoting the page's own words "
-        "exactly (copy them, numbers as written). For a table, quote the row label and the value joined by "
-        '" ... ", e.g. "Total revenue ... 2,110,127". Only values for the field\'s entity and period.\n'
-        "- Call mark_not_public only after reading documents and searching.\n"
-        "- When every field is recorded or not public, or nothing more can be found, call done.\n"
-        "Fields:\n" + "\n".join(_field_lines(ctx.conn, sub)) + "\nDocuments:\n" + "\n".join(doc_lines))
+        f"You lead research on: {sub['objective']}. {date_note(ctx.today)}\n"
+        "You don't read pages yourself. For each open field decide once where it most likely is and hand it over:\n"
+        + (f'- explore_document(doc="{eg}", fields=[{first}], goal="...") when a document likely holds it (annual '
+           "reports and results for financial figures, rating rationales for ratings);\n" if eg else "")
+        + f'- search_web(fields=[{first}], goal="...") when no document fits or a document didn\'t have it.\n'
+        "Group related fields in one hand-off. Read each report; try the other route for fields still missing. "
+        "mark_not_public only after both the web and (if any) a document were tried. Call done when every field is "
+        "recorded or not public, or nothing more can be tried.\nFields:\n" + "\n".join(_field_lines(ctx.conn, sub))
+        + "\nDocuments:\n" + "\n".join(doc_lines))
     return [{"role": "system", "content": text}]
-
-
-def _notes(ctx, sub, last_text: str) -> dict:
-    read = [f"{k} {page_ranges(p)}" for k, p in sub["read"].items() if p]
-    return {"role": "user", "content": (
-        "Progress so far (earlier messages were dropped to save space):\n" + "\n".join(_field_lines(ctx.conn, sub))
-        + f"\nDocument pages already read: {'; '.join(read) or 'none'}"
-        + f"\nSearches already tried: {'; '.join(sub['queries']) or 'none'}"
-        + (f"\nYour last note: {last_text[:500]}" if last_text else "") + "\nContinue.")}
-
-
-def _label(call: dict, result: str) -> str:
-    a, name = call["args"], call["name"]
-    first = result.split("\n", 1)[0]
-    if name == "search":
-        return f'search "{a.get("query", "")}"'
-    if name == "open_result":
-        url = next((w for w in first.split() if w.startswith("http")), "")
-        return f"open [{a.get('n')}] {urlparse(url).netloc or first[:40]}"
-    if name == "pdf_page":
-        return f"{a.get('doc')} p.{a.get('page')}"
-    if name == "pdf_find":
-        terms = a.get("terms")
-        return f"{a.get('doc')} find {', '.join(map(str, terms if isinstance(terms, list) else [terms]))}"
-    if name == "pdf_contents":
-        return f"{a.get('doc')} contents"
-    if name == "record_value":
-        return first.split(" (", 1)[0].replace(f"[{a.get('field')}] ", "") if first.startswith("recorded") else first[:80]
-    if name == "mark_not_public":
-        return first[:80]
-    return name
-
-
-def _pauser(ctx, sub):
-    """on_wait for local(): show a paused status and say why, once per pause; paused['on'] tells the caller
-    to restore the status afterwards."""
-    paused = {"on": False, "was": sub.get("status")}
-
-    def wait(reason: str) -> None:
-        paused.update(on=True, was=sub.get("status"))
-        ctx.set_subtask(sub, status="paused_memory")
-        ctx.post("The Mac is short of memory, so research is paused until it frees up." if reason == "memory" else
-                 "The local research model (MTPLX) isn't answering; research is paused until it is running.")
-    return paused, wait
-
-
-def _chars(msgs: list[dict]) -> int:
-    return sum(len(str(m.get("content") or "")) + len(json.dumps(m.get("tool_calls") or "")) for m in msgs)
 
 
 def _closed(conn, sub) -> bool:
@@ -112,71 +71,64 @@ def _closed(conn, sub) -> bool:
     return all(f["status"] in ("found", "unavailable") and f["id"] not in recheck for f in all_fields(conn, sub["id"]))
 
 
-async def run_loop(ctx, sub, on_round) -> str:
-    """Bonsai works the sub-task with tools until done / all fields closed / step budget / stalled."""
-    sub["results"], sub["recent"], sub["last_page"] = [], [], None  # nothing carried over from an earlier loop
-    sub.setdefault("recheck", set())
-    sub["done_note"] = ""
-    paused, wait = _pauser(ctx, sub)
+def _nos(v) -> list[int]:
+    v = v if isinstance(v, list) else [v]
+    return [int(x) for x in v if isinstance(x, int) and not isinstance(x, bool) or isinstance(x, str) and x.isdigit()]
 
-    msgs = opening(ctx, sub) + [{"role": "user", "content": status_line(ctx.conn, sub["id"]) + "\nBegin."}]
-    steps = idle = tokens = sent = errors = 0
-    last_text = ""
-    while True:
-        if _closed(ctx.conn, sub):
-            return "closed"
-        if steps >= config.MAX_STEPS:
-            return "steps"
-        # last request's size plus what was appended since (~3 chars per token), so a turn that adds three
-        # pages can't push the next request past the server's context window
-        est = (tokens + _chars(msgs[sent:]) // 3) if tokens else _chars(msgs) // 3  # no count from the server: all
-        if est > config.CONTEXT_TOKENS:
-            log.info("compacting the agent conversation at ~%d tokens", est)
-            msgs = opening(ctx, sub) + [_notes(ctx, sub, last_text)]
-        sent = len(msgs)
-        try:
-            r = await local("research", msgs, tools=TOOLS, max_tokens=REPLY_TOKENS, on_wait=wait)
-            errors = 0
-        except LocalModelError as e:  # e.g. prompt over the context window: compact once, then give up this loop
-            errors += 1
-            log.warning("research model error (%d): %s", errors, e)
-            if errors >= 2:
-                return "error"
-            msgs, tokens, sent = opening(ctx, sub) + [_notes(ctx, sub, last_text)], 0, 0
-            continue
-        if paused["on"]:
-            paused["on"] = False
-            ctx.set_subtask(sub, status=paused["was"])
-        tokens = r.prompt_tokens
-        if r.content:
-            last_text = r.content
-        if not r.tool_calls:
-            idle += 1
-            if idle >= 2:
-                return "stalled"
-            msgs += [{"role": "assistant", "content": r.content}, {"role": "user", "content": NUDGE}]
-            continue
-        idle = 0
-        msgs.append({"role": "assistant", "content": r.content or "", "tool_calls": [
-            {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["args"])}}
-            for c in r.tool_calls]})
-        finished = False
-        for i, c in enumerate(r.tool_calls):
-            if i >= MAX_CALLS_PER_TURN:
-                result = f"skipped: max {MAX_CALLS_PER_TURN} tool calls per turn"
+
+async def run_loop(ctx, sub, on_round) -> str:
+    """The main agent works the sub-task by delegating; returns why it stopped."""
+    sub.setdefault("recheck", set())
+    sub.setdefault("reports", [])
+    delegations = {"n": 0}
+    rows = lambda: all_fields(ctx.conn, sub["id"])  # noqa: E731
+
+    async def handle(name: str, a: dict) -> str:
+        if name in ("explore_document", "search_web"):
+            if delegations["n"] >= config.MAX_DELEGATIONS:
+                return "delegation budget used for this round; call done"
+            nos = [n for n in _nos(a.get("fields")) if 1 <= n <= len(rows())]
+            if not nos:
+                return "error: give the field numbers to look for"
+            delegations["n"] += 1
+            names = ", ".join(rows()[n - 1]["name"] for n in nos)
+            goal = str(a.get("goal") or sub["objective"])
+            if name == "explore_document":
+                on_round(f"→ PDF {str(a.get('doc')).upper()}: {names}", 0)
+                rep = await pdf_agent.explore(ctx, sub, str(a.get("doc") or ""), nos, goal, on_round)
             else:
-                result, pages = await run_tool(ctx, sub, c["name"], c["args"])
-                steps += 1
-                try:
-                    label = _label(c, result)
-                except Exception:  # a label must never end the research
-                    label = c["name"]
-                on_round(label, pages)
-                finished = finished or c["name"] == "done"
-            msgs.append({"role": "tool", "tool_call_id": c["id"], "content": result})
-        if finished:
-            log.info("agent done: %s", clip(sub["done_note"], 200))
-            return "done"
+                on_round(f"→ web: {names}", 0)
+                rep = await web_agent.search(ctx, sub, nos, goal, on_round)
+            sub["reports"].append(rep)
+            return rep + "\n" + status_line(ctx.conn, sub["id"])
+        if name == "mark_not_public":
+            n = (_nos(a.get("field")) or [0])[0]
+            if not 1 <= n <= len(rows()):
+                return f"error: no field {a.get('field')}"
+            f = rows()[n - 1]
+            if f["status"] == "found" or f["accepted"]:
+                return f"refused: [{n}] already has a value"
+            need = (["the web agent"] if f["id"] not in sub.get("missing_web", set()) else []) + \
+                (["a PDF agent"] if ctx.docs() and f["id"] not in sub.get("missing_pdf", set()) else [])
+            if need:
+                return f"refused: [{n}] hasn't been looked for by {' and '.join(need)} yet"
+            ctx.set_field(f, status="unavailable", accepted=0, note=f"not public: {a.get('reason') or 'not found'}")
+            on_round(f"not public: {f['name']}", 0)
+            return f"marked [{n}] {f['name']} not public\n" + status_line(ctx.conn, sub["id"])
+        if name == "done":
+            return "ok"
+        return f"error: unknown tool {name!r}"
+
+    def compact(msgs: list[dict]) -> list[dict]:
+        return opening(ctx, sub) + [{"role": "user", "content": "Reports so far (earlier messages dropped):\n"
+                                     + "\n".join(sub["reports"][-6:]) + "\nContinue."}]
+
+    if _closed(ctx.conn, sub):
+        return "closed"
+    msgs = opening(ctx, sub) + [{"role": "user", "content": status_line(ctx.conn, sub["id"]) + "\nBegin."}]
+    why, _ = await agentkit.loop(ctx, sub, msgs, MAIN_TOOLS, handle, config.MAX_DELEGATIONS * 2 + 4, compact,
+                                 ("done",), stop=lambda: _closed(ctx.conn, sub))
+    return {"finished": "done"}.get(why, why)
 
 
 REVIEW_PROMPT = (
@@ -204,7 +156,7 @@ async def self_review(ctx, sub) -> str:
     """Bonsai (thinking on) checks the sub-task's values. Returns 'reopened' if anything goes back to work."""
     msgs = [{"role": "system", "content": REVIEW_PROMPT},
             {"role": "user", "content": f"{date_note(ctx.today)}\nTopic: {sub['objective']}\n{_review_table(ctx, sub)}"}]
-    paused, wait = _pauser(ctx, sub)
+    paused, wait = agentkit.pauser(ctx, sub)
     try:
         r = await local("research", msgs, think=True, max_tokens=4000, on_wait=wait)
     except LocalModelError as e:
@@ -269,6 +221,10 @@ async def run_subtask(ctx, subtask_id: int) -> None:
             continue
         ctx.set_subtask(st, status="partial")
         break
+    for f in all_fields(conn, subtask_id):  # say where never-found fields were looked for (report Gaps)
+        if f["status"] == "open":
+            where = "; ".join(sorted(st.get("looked", {}).get(f["id"], ()))) or "nothing tried"
+            ctx.set_field(f, note=f"not found (looked in: {where})")
     rows = all_fields(conn, subtask_id)
     ctx.post(f"Sub-task '{st['objective']}' ended {st['status']}: {sum(bool(f['accepted']) for f in rows)}/"
              f"{len(rows)} fields checked, {ctx.pages_used} pages read in this research so far.")

@@ -26,9 +26,9 @@ async def lifespan(app: FastAPI):
     # one shared connection, used only on the event-loop thread (routes are async)
     logs.setup()
     app.state.conn = conn = connect(config.DB_PATH)
-    log.info("db %s; search region %s via %s; limits: %d sub-tasks, %d steps/loop, %d restarts, %d pages; "
+    log.info("db %s; search region %s via %s; limits: %d sub-tasks, %d delegations/loop, %d restarts, %d pages; "
              "research model %s, chat model %s", config.DB_PATH, config.SEARCH_REGION, config.SEARCH_BACKENDS,
-             config.MAX_SUBTASKS, config.MAX_STEPS, config.MAX_RESTARTS, config.MAX_PAGES, config.RESEARCH_URL,
+             config.MAX_SUBTASKS, config.MAX_DELEGATIONS, config.MAX_RESTARTS, config.MAX_PAGES, config.RESEARCH_URL,
              config.CHAT_URL)
     for name, url in (("research", config.RESEARCH_URL), ("chat", config.CHAT_URL)):
         try:  # a missing server is not fatal: calls wait for it; just say so early

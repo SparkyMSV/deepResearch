@@ -60,7 +60,7 @@ def test_final_review_levels_and_clears(ctx):
     async def ask(msgs):
         ask.msgs = msgs
         return json.dumps({"fields": [{"field": 1, "action": "accept"}, {"field": 2, "action": "reject", "reason": "FY25 figure"},
-                                      {"field": 3, "action": "unavailable", "reason": "not disclosed"}]})
+                                      {"field": 3, "action": "accept"}]})
     asyncio.run(final.final_review(ctx, ask))
     assert levels(ctx) == [("A", "found", "1", 2), ("B", "open", None, 0), ("C", "unavailable", None, 2)]
     assert "[2] B" in ask.msgs[1]["content"] and 'quote: "q"' in ask.msgs[1]["content"]
@@ -94,8 +94,10 @@ def test_revenue_from_operations_is_not_used_for_the_profit_identity():
     assert final.identity_notes(rows) == {}
 
 
-def test_final_unavailable_clears_the_value(ctx):
+def test_final_review_has_no_unavailable_action_and_warns_against_own_beliefs(ctx):
     async def ask(msgs):
-        return json.dumps({"fields": [{"field": 2, "action": "unavailable", "reason": "not disclosed"}]})
+        ask.msgs = msgs
+        return json.dumps({"fields": [{"field": 2, "action": "unavailable", "reason": "no such entity"}]})
     asyncio.run(final.final_review(ctx, ask))
-    assert levels(ctx)[1] == ("B", "unavailable", None, 2)
+    assert levels(ctx)[1] == ("B", "found", "2", 0)  # ignored: the reviewer can't declare a field not public
+    assert "not from your own beliefs" in ask.msgs[0]["content"] and "unavailable" not in ask.msgs[0]["content"]

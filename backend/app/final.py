@@ -81,9 +81,10 @@ def identity_notes(fields: list[dict]) -> dict[int, str]:
 
 FINAL_PROMPT = (
     "You give the final check before a research report is written. For each numbered field decide: accept (the "
-    "value is for the field's entity and period and its quote supports it; or 'not public' is believable), reject "
-    "(wrong or unsupported; say why) or unavailable (not publicly available; say why). Notes saying figures don't "
-    "add up deserve a close look. Reply with JSON only: "
+    "value is for the field's entity and period and its quote supports it; or the research's 'not public' finding "
+    "is believable) or reject (wrong or unsupported; say why). Judge only from the values, quotes and notes shown, "
+    "not from your own beliefs about the entity or whether it exists. Notes saying figures don't add up deserve a "
+    "close look. Reply with JSON only: "
     '{"fields":[{"field":1,"action":"accept","reason":""}]}'
 )
 
@@ -124,7 +125,4 @@ async def final_review(ctx, ask) -> None:
             ctx.set_field(f, status="open", accepted=0, value=None, unit=None, reported_period=None, source_url=None,
                           source_key=None, page=None, quote=None, source_kind=None,
                           note=f"rejected in final review: {why}" if why else "rejected in final review")
-        elif act == "unavailable":
-            ctx.set_field(f, status="unavailable", accepted=2, note=why or f["note"], value=None, unit=None,
-                          reported_period=None, source_url=None, source_key=None, page=None, quote=None, source_kind=None)
     log.info("final review: %s", clip(items, 300))
