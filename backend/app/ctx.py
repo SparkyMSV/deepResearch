@@ -1,5 +1,6 @@
 """Per-research state shared by the harness steps, plus live document/field events for the UI."""
 import asyncio
+import re
 from dataclasses import dataclass, field
 
 from app import config, events
@@ -56,12 +57,18 @@ class TaskCtx:
         events.publish(self.conv_id, {"type": "message", "message": msg})
 
 
-def date_note(today: str) -> str:
-    """Spell out which periods are already over; both small and large models got this wrong."""
+def is_fiscal(periods) -> bool:
+    """Any period written as a financial year ("FY2025-26", "2025-26")."""
+    return any(re.search(r"\bFY|\b(19|20)\d\d\s*[-/]\s*\d\d\b", p or "", re.I) for p in periods)
+
+
+def date_note(today: str, fiscal: bool = True) -> str:
+    """Spell out which periods are already over; both small and large models got this wrong. The financial year
+    only when the research is about one (it's noise for, say, a medical question)."""
     y, m = int(today[:4]), int(today[5:7])
     fy = y if m >= 4 else y - 1  # Indian financial year April-March
-    return (f"Today is {today}. Calendar year {y - 1} has ended, and FY{fy - 1}-{str(fy)[2:]} "
-            f"(April {fy - 1} to March {fy}) has ended; their annual reports are usually out by now.")
+    return (f"Today is {today}. Calendar year {y - 1} has ended"
+            + (f", and FY{fy - 1}-{str(fy)[2:]} (April {fy - 1} to March {fy}) has ended." if fiscal else "."))
 
 
 def new_state(row: dict) -> dict:

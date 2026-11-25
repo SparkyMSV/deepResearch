@@ -196,3 +196,9 @@ def test_opening_shows_document_dates_and_prefers_the_fields_period(env):
     c.set_doc(c.docs()[0], period="April 2025")
     sys = agent.opening(c, sub)[0]["content"]
     assert "dated April 2025" in sys and "field's period" in sys
+
+
+def test_reviews_judge_substance_not_format():
+    from app import final
+    for p in (agent.REVIEW_PROMPT, final.FINAL_PROMPT):
+        assert "sign" in p and "rounding" in p

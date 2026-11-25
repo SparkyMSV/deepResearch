@@ -34,9 +34,10 @@ def plan_doc(c):
     return c.doc("D1")
 
 
-def test_find_document_screens_then_verifies(monkeypatch):
+def test_find_document_model_picks_then_verifies(monkeypatch):
     store = FakeStore({NAVI: ["Navi Finserv Limited Annual Report 2025-26"], NAZARA: ["Nazara"]})
-    q = ScriptedQwen(("Another year is fine", {"match": True, "about": "Navi Finserv AR FY26", "covers": "financials"}))
+    q = ScriptedQwen(("Which results", {"pick": [2]}),
+                     ("Another year is fine", {"match": True, "about": "Navi Finserv AR FY26", "covers": "financials"}))
     hits = [Hit("Annual Report FY 25-26", NAZARA, "Nazara Technologies"), Hit("Navi Finserv annual report", NAVI, "")]
     c, _ = make(monkeypatch, store, q, hits)
     asyncio.run(docs.find_document(c, plan_doc(c)))

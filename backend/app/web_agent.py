@@ -5,7 +5,7 @@ import logging
 import re
 
 from app import agentkit, config
-from app.ctx import date_note
+from app.ctx import date_note, is_fiscal
 from app.docs import _is_pdf, add_found_pdf
 from app.fields import _why_not, all_fields, record
 from app.logs import clip
@@ -141,7 +141,7 @@ async def search(ctx, sub, field_nos: list[int], goal: str, on_round) -> str:
 
     objective = "\n".join(f"[{n}] {f['name']} — {f['entity'] or 'any'}, {f['period']}"
                           + (f" — hint: {f['hint']}" if f["hint"] else "") for n, f in fields)
-    system = (f"You are a researcher finding facts on the web. {date_note(ctx.today)}\nObjective: {goal}\n"
+    system = (f"You are a researcher finding facts on the web. {date_note(ctx.today, is_fiscal(f['period'] for _, f in fields))}\nObjective: {goal}\n"
               f"Fields:\n{objective}\nSearch history of this research (don't repeat queries; learn from the "
               f"remarks):\n{_history(ctx)}\nHow to work: first think what each field means, who publishes it "
               "first-hand (the organisation itself, a regulator, official statistics, a paper, a reputable data or "

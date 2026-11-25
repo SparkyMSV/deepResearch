@@ -73,31 +73,6 @@ def fetch(hit: Hit) -> Hit | None:
         return None
 
 
-_STOP = {"limited", "ltd", "pvt", "private", "inc", "corp", "corporation", "company", "co", "plc", "llp",
-         "the", "and", "of"}
-
-
-def name_words(name: str) -> set[str]:
-    """Distinctive words of an entity name: 'Navi Finserv Limited' -> {'navi', 'finserv'}."""
-    return {w for w in re.findall(r"[a-z0-9]+", (name or "").lower()) if len(w) >= 3 and w not in _STOP}
-
-
-def key_word(name: str) -> str | None:
-    """The first distinctive word, usually the brand: 'Navi Finserv Limited' -> 'navi'. Matching any word
-    would let 'Bajaj Finserv' pass for Navi Finserv."""
-    return next((w for w in re.findall(r"[a-z0-9]+", (name or "").lower()) if len(w) >= 3 and w not in _STOP), None)
-
-
-def _seen_text(hit: Hit) -> str:
-    return f"{hit.url} {hit.title} {hit.snippet}".lower()
-
-
-def mentions(hit: Hit, words: set[str]) -> bool:
-    """Free screen: does the URL, title or snippet name the entity?"""
-    t = _seen_text(hit)
-    return any(w in t for w in words)
-
-
 def window(text: str, keywords: list[str], n: int = 6000) -> str:
     """Up to n chars of a long page, starting a little before the first keyword hit."""
     low = text.lower()

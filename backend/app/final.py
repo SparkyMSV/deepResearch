@@ -6,7 +6,7 @@ import re
 import openai
 
 from app.fields import cite
-from app.ctx import date_note
+from app.ctx import date_note, is_fiscal
 from app.local_llm import parse_json
 from app.logs import clip
 
@@ -83,7 +83,9 @@ def identity_notes(fields: list[dict]) -> dict[int, str]:
 FINAL_PROMPT = (
     "You give the final check before a research report is written. For each numbered field decide: accept (the "
     "value is for the field's entity and period and its quote supports it; or the research's 'not public' finding "
-    "is believable) or reject (wrong or unsupported; say why). Judge only from the values, quotes and notes shown, "
+    "is believable) or reject (wrong number, entity, period or item, or unsupported; say why). Don't reject for "
+    "format alone: a sign convention (a reduction given as -20.9% or 20.9%), rounding or how a unit is written are "
+    "fine when the number matches the quote. Judge only from the values, quotes and notes shown, "
     "not from your own beliefs about the entity or whether it exists. Notes saying figures don't add up deserve a "
     "close look. Reply with JSON only: "
     '{"fields":[{"field":1,"action":"accept","reason":""}]}'
@@ -106,7 +108,7 @@ async def final_review(ctx, ask) -> None:
             body = "not public" if f["status"] == "unavailable" else "not found"
         lines.append(head + body + (f" | note: {f['note']}" if f["note"] else ""))
     msgs = [{"role": "system", "content": FINAL_PROMPT},
-            {"role": "user", "content": date_note(ctx.today) + "\n" + "\n".join(lines)}]
+            {"role": "user", "content": date_note(ctx.today, is_fiscal(f["period"] for f in rows)) + "\n" + "\n".join(lines)}]
     try:
         d = parse_json(await ask(msgs) or "")
     except openai.APIError as e:

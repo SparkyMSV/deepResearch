@@ -8,7 +8,7 @@ from app import docprep
 from app.db import insert
 from app.local_llm import WORK, parse_json, qwen
 from app.logs import clip
-from app.search import ddg, key_word, mentions, name_words
+from app.search import ddg
 
 log = logging.getLogger(__name__)
 
@@ -100,12 +100,10 @@ async def verify(ctx, url: str, expect: dict, about_entity: bool = False) -> dic
 
 
 async def find_document(ctx, doc: dict) -> None:
-    """Search for a planned document, screen candidates for free, verify up to 3, keep the first match."""
-    words = name_words(doc["issuer"] or doc["name"])
-    brand = {w} if (w := key_word(doc["issuer"] or doc["name"])) else words
+    """Search for a planned document, let the model pick candidates, verify up to 3, keep the first match."""
     domains = json.loads(doc.get("domains") or "[]")
     # several searches: the planner's, a generic one, then the likely hosts (issuer site, exchanges); stop once
-    # there are enough candidates that name the company
+    # there are enough PDF candidates for the model to choose from
     queries = [doc["search"], f"{doc['issuer']} {doc['type']} {doc['period']} pdf"] + \
         [f"{doc['issuer']} {doc['type']} site:{d}" for d in domains[:MAX_SITE_SEARCHES]]
     keep, seen = [], set()
@@ -114,10 +112,7 @@ async def find_document(ctx, doc: dict) -> None:
             if not _is_pdf(h.url) or h.url in seen:
                 continue
             seen.add(h.url)
-            if mentions(h, brand):
-                keep.append(h)
-            else:
-                log.info("document %s: screened out %s (no %s in URL/title/snippet)", doc["key"], h.url, sorted(brand))
+            keep.append(h)
         if len(keep) >= CHOICES:
             break
     expect = {"issuer": doc["issuer"] or doc["name"], "type": doc["type"] or "document", "period": doc["period"]}

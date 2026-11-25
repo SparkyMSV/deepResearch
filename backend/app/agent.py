@@ -3,7 +3,7 @@ or the web agent, then reviews its own values. One sub-task at a time."""
 import logging
 
 from app import agentkit, config, events, logs, pdf_agent, web_agent
-from app.ctx import date_note, new_state
+from app.ctx import date_note, is_fiscal, new_state
 from app.db import insert
 from app.fields import all_fields, cite, status_line
 from app.local_llm import LocalModelError, local, parse_json
@@ -47,6 +47,7 @@ def _field_lines(conn, sub) -> list[str]:
 def opening(ctx, sub) -> list[dict]:
     """Fixed start of the main agent's requests (the server reuses it)."""
     docs = ctx.docs()
+    fiscal = is_fiscal(f["period"] for f in all_fields(ctx.conn, sub["id"]))
     doc_lines = [f"{d['key']} {d['about'] or d['name']}" + (f" — dated {d['period']}" if d.get("period") else "")
                  + f" — covers {d['covers'] or '?'} — {d['pages'] or '?'} pages"
                  + (" — has a contents page" if d.get("contents") not in (None, "", "[]") else "")
@@ -54,7 +55,7 @@ def opening(ctx, sub) -> list[dict]:
     eg = docs[0]["key"] if docs else None
     first = next((i for i, f in enumerate(all_fields(ctx.conn, sub["id"]), 1) if f["status"] == "open"), 1)
     text = (
-        f"You lead a piece of research: {sub['objective']}. {date_note(ctx.today)}\n"
+        f"You lead a piece of research: {sub['objective']}. {date_note(ctx.today, fiscal)}\n"
         "You are a researcher, not a lookup. For each open field first work out what it really asks: what the "
         "figure or fact means, what sources call it (other names, abbreviations) and which kind of source publishes "
         "it first-hand (a report, filing, paper, official statistics, a regulator, the organisation itself). Then "
@@ -142,7 +143,9 @@ async def run_loop(ctx, sub, on_round) -> str:
 REVIEW_PROMPT = (
     "You check a research assistant's values before they go into a report. For each field decide: accept "
     "(the value is for the field's entity and period, and the quote supports it; or 'not public' is believable), "
-    "reject (wrong or unsupported; give a hint), or retry (worth looking again; give a hint where). Reply with "
+    "reject (wrong number, entity, period or item, or the quote doesn't support it; give a hint), or retry (worth "
+    "looking again; give a hint where). Don't reject for format alone: a sign convention (a reduction given as "
+    "-20.9% or 20.9%), rounding or how a unit is written are fine when the number matches the quote. Reply with "
     'JSON only: {"fields":[{"field":1,"action":"accept","hint":""}]}'
 )
 
@@ -163,7 +166,7 @@ def _review_table(ctx, sub) -> str:
 async def self_review(ctx, sub) -> str:
     """Bonsai (thinking on) checks the sub-task's values. Returns 'reopened' if anything goes back to work."""
     msgs = [{"role": "system", "content": REVIEW_PROMPT},
-            {"role": "user", "content": f"{date_note(ctx.today)}\nTopic: {sub['objective']}\n{_review_table(ctx, sub)}"}]
+            {"role": "user", "content": f"{date_note(ctx.today, is_fiscal(f['period'] for f in all_fields(ctx.conn, sub['id'])))}\nTopic: {sub['objective']}\n{_review_table(ctx, sub)}"}]
     paused, wait = agentkit.pauser(ctx, sub)
     try:
         r = await local("research", msgs, think=True, max_tokens=4000, on_wait=wait)

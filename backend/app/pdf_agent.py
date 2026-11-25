@@ -4,7 +4,7 @@ import logging
 from collections import Counter
 
 from app import agentkit, config, docprep, tables
-from app.ctx import date_note
+from app.ctx import date_note, is_fiscal
 from app.docs import page_ranges
 from app.fields import _why_not, all_fields, record
 from app.logs import clip
@@ -58,7 +58,7 @@ def _prompt(ctx, doc, prep, fields: list[tuple[int, dict]], goal: str) -> str:
     lines = "\n".join(f"[{n}] {f['name']} — {f['entity'] or 'any'}, {f['period']}"
                       + (f" — hint: {f['hint']}" if f["hint"] else "") for n, f in fields)
     return (
-        f"You are a researcher working through one document. {date_note(ctx.today)}\nGoal: {goal}\n"
+        f"You are a researcher working through one document. {date_note(ctx.today, is_fiscal(f['period'] for _, f in fields))}\nGoal: {goal}\n"
         f"Document {doc['key']}: {doc['about'] or doc['name']} ({prep.pages} pages)"
         + (f"; {doc['notes']}" if doc.get("notes") else "") + f"\nContents (printed page numbers):\n{contents}\n"
         f"Fields to find:\n{lines}\n"

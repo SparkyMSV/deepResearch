@@ -173,30 +173,11 @@ def test_rerank_marks_pdfs_and_prefers_them_for_figures(monkeypatch):
     assert "[1] [PDF] ar" in prompts[0] and "PDF documents" in prompts[0]
 
 
-NAVI = search.name_words("Navi Finserv Limited")
-
-
-def test_name_words():
-    assert NAVI == {"navi", "finserv"}
-
-
-def test_screen_drops_other_companies():
-    nazara = Hit("Annual Report FY 23-24", "https://cdn.prod.website-files.com/x/Annual+Report+FY+23-24.pdf",
-                 "Nazara Technologies annual report")
-    charity = Hit("Wizard's Wardrobe Annual Report", "https://static1.squarespace.com/Annual+Report+FY+23-24.pdf", "")
-    navi = Hit("BOARD'S REPORT", "https://public-assets.prod.navi-tech.in/docs/AnnualReturns/2023-24.pdf", "")
-    assert [search.mentions(h, NAVI) for h in (nazara, charity, navi)] == [False, False, True]
-
-
 def test_window_centres_on_keyword():
     text = "x" * 10000 + "Gross NPA was 2%" + "y" * 10000
     w = search.window(text, ["gross npa"], 6000)
     assert "Gross NPA was 2%" in w and len(w) == 6000
     assert search.window("short", ["none"]) == "short"
-
-
-def test_screen_uses_the_brand_word_not_any_word():
-    assert search.key_word("Navi Finserv Limited") == "navi"
 
 
 def test_ddg_uses_backends_and_falls_back(monkeypatch):

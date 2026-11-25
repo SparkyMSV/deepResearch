@@ -31,3 +31,10 @@ def test_date_note_says_last_financial_year_has_ended():
     n = C.date_note("2026-11-24")
     assert "FY2025-26 (April 2025 to March 2026) has ended" in n and "Calendar year 2025 has ended" in n
     assert "FY2024-25" in C.date_note("2026-02-10")
+
+
+def test_date_note_mentions_financial_years_only_when_asked():
+    n = C.date_note("2026-11-24", fiscal=False)
+    assert n.startswith("Today is 2026-11-24") and "FY" not in n and "annual report" not in n
+    assert "annual report" not in C.date_note("2026-11-24")
+    assert C.is_fiscal(["FY2025-26"]) and C.is_fiscal(["2025-26"]) and not C.is_fiscal(["72 weeks", "2024", ""])
