@@ -147,3 +147,19 @@ def test_every_tool_call_logged_with_args_and_result(env, monkeypatch, caplog):
         run(env, s, monkeypatch)
     assert "tool record_value" in caplog.text and "not on the page" in caplog.text and "-> rejected" in caplog.text
     assert "tool read_pages" in caplog.text and '"from": 12' in caplog.text
+
+
+def test_record_from_table_row_and_column(env, monkeypatch):
+    from tests.test_tables import PAGE
+    c, sub = env
+    ps = pages()
+    ps[13] = PAGE
+    c.store = FakeStore({U: ps}, {U: TOC})
+    s = Script(Reply("", [call("read_pages", **{"from": 12, "to": 12})], 900),
+               Reply("", [call("record_value", field=1, value="118210", unit="₹ Mn", row="Adjusted net debt",
+                               column="March 31, 2026", page=12)], 1500),
+               Reply("", [call("record_value", field=2, row="net debt", column="2026", page=12)], 1600), END)
+    run(env, s, monkeypatch)
+    f = c.conn.execute("select value, unit, reported_period, quote from fields where name='Total Debt'").fetchone()
+    assert tuple(f) == ("1,18,210.52", "₹ Mn", "As at March 31, 2026", "Adjusted net debt ... 1,18,210.52")
+    assert "several rows match" in s.sent[3]["messages"][-1]["content"]

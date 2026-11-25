@@ -2,7 +2,7 @@
 quotes. Page offsets, page extraction and OCR are hidden inside its tools."""
 import logging
 
-from app import agentkit, config, docprep
+from app import agentkit, config, docprep, tables
 from app.ctx import date_note
 from app.docs import page_ranges
 from app.fields import all_fields, record
@@ -25,10 +25,11 @@ PDF_TOOLS = [
         "page, section and a short passage. Use it to choose pages, then read them.", {"query": _S}, ["query"]),
     _fn("read_pages", "Read whole printed pages from-to (at most 2). Use the page numbers printed in the document.",
         {"from": _I, "to": _I, "section": _S}, ["from", "to"]),
-    _fn("record_value", "Record a field's value from a page you read in full, quoting that page's own words. For a "
-        "table row, quote the row label and the value joined by ' ... '.",
-        {"field": _I, "value": _S, "unit": _S, "period": _S, "quote": _S, "page": _I, "section": _S},
-        ["field", "value", "quote", "page"]),
+    _fn("record_value", "Record a field's value from a page you read in full. For a figure in a table, give row "
+        "(the row's label) and column (its heading, e.g. the date): the number is read from the table. Otherwise "
+        "give value and a quote copied from the page.",
+        {"field": _I, "value": _S, "unit": _S, "period": _S, "quote": _S, "row": _S, "column": _S, "page": _I,
+         "section": _S}, ["field", "page"]),
     _fn("report", "Finish: say what you found, which fields are missing, and where they might be.",
         {"found": _S, "missing": _S, "notes": _S}, ["notes"]),
 ]
@@ -55,7 +56,7 @@ def _prompt(ctx, doc, prep, fields: list[tuple[int, dict]], goal: str) -> str:
         f"Fields to find:\n{lines}\n"
         "How to work: locate, then read. Call locate with the field's words "
         f'(e.g. locate(query="{eg_field} {fields[0][1]["period"] if fields else ""}")), read the best pages in full '
-        "with read_pages, then record_value with a quote copied from that page and its printed page number. "
+        "with read_pages, then record_value with its printed page number and, for a table, the row and column (else a quote). "
         "Only values for the field's entity and period. Don't page through the document blindly. "
         "When done, or when the values aren't in this document, call report.")
 
@@ -133,8 +134,14 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
                 return f"rejected: read the page first with read_pages (page {p} hasn't been read in full)"
             src = {"url": doc["url"], "title": doc["name"], "key": doc["key"], "page": pdf, "kind": "doc",
                    "text": read[pdf]["text"]}
-            out = record(ctx, sub, n, str(a.get("value") or ""), str(a.get("unit") or ""), str(a.get("period") or ""),
-                         str(a.get("quote") or ""), src)
+            value, period, quote = str(a.get("value") or ""), str(a.get("period") or ""), str(a.get("quote") or "")
+            if a.get("row"):  # the harness reads the number, so it can't be mistyped
+                c = tables.cell(read[pdf]["text"], str(a["row"]), str(a.get("column") or ""))
+                if c.error:
+                    on_round(f"rejected: {c.error}"[:80], 0)
+                    return f"rejected: {c.error}"
+                value, period, quote = c.value, period or c.column, c.quote
+            out = record(ctx, sub, n, value, str(a.get("unit") or ""), period, quote, src)
             if out.startswith("recorded"):
                 f = all_fields(ctx.conn, sub["id"])[n - 1]
                 ctx.set_field(f, printed_page=p)

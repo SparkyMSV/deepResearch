@@ -41,7 +41,8 @@ def _why_not(value: str, quote: str, page: str) -> str | None:
     parts = [norm(p) for p in re.split(r"\.\.\.|…", quote or "") if norm(p)]
     if not parts or sum(len(p) for p in parts) < MIN_QUOTE:
         return f"quote too short (at least {MIN_QUOTE} characters of the page's own words)"
-    if any(p not in page for p in parts):
+    ungroup = lambda s: re.sub(r"(?<=\d),(?=\d)", "", s)  # 1,18,210.52 = 118,210.52 = 118210.52
+    if any(ungroup(p) not in ungroup(page) for p in parts):
         return ("quote not found word for word on the pages you read last (for a table, quote the row label and "
                 "the value joined by ' ... ')")
     digits = re.sub(r"\D", "", value)
