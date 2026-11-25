@@ -67,3 +67,23 @@ class ScriptedQwen:
                     reply = reply(prompt)
                 return reply if isinstance(reply, str) else json.dumps(reply)
         return "{}"
+
+
+class Script:
+    """Fake local(): scripted Replies (or callables taking on_wait), recording what was sent."""
+
+    def __init__(self, *replies, default=None):
+        self.replies, self.sent, self.default = list(replies), [], default
+
+    async def __call__(self, role, messages, tools=None, max_tokens=800, think=False, on_token=None, on_wait=None,
+                       max_wait=None):
+        import json as _json
+        self.sent.append({"role": role, "messages": _json.loads(_json.dumps(messages)), "think": think, "tools": tools})
+        r = self.replies.pop(0) if self.replies else self.default
+        if callable(r):
+            r = r(on_wait)
+        return r
+
+
+def call(name, i=0, **args):
+    return {"id": f"c{name}{i}", "name": name, "args": args}
