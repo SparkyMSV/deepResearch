@@ -23,6 +23,9 @@ class FakeStore:
         await self.pages(url)
         return {} if url in getattr(self, "scanned", set()) else {i: t for i, t in enumerate(self.docs[url], 1)}
 
+    async def spread(self, url):
+        return url in getattr(self, "spreads", set())
+
     async def contents(self, url):
         entries = self.toc.get(url, [])
         return Contents(entries, "" if len(entries) >= 5 else "\n".join(self.docs[url][0].splitlines()[:40]))

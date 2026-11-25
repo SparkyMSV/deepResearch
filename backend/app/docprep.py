@@ -74,7 +74,13 @@ class Prepared:
     offset: int = 0  # whole-document offset when there are no contents
     offset_ok: bool = False
     scanned: int = 0  # pages without a text layer (not indexed)
+    spread: bool = False  # each PDF page holds two printed pages (2-3, 4-5, ...)
     index: PageIndex | None = None
+
+
+def _h(prep: Prepared, printed: int) -> int:
+    """Printed page in PDF-page steps: spreads advance one PDF page per two printed pages."""
+    return printed // 2 if prep.spread else printed
 
 
 def _runs(prep: Prepared) -> list[tuple[dict, int]]:
@@ -92,8 +98,8 @@ def to_pdf(prep: Prepared, printed: int, section: str | None = None):
     (numbering restarts); ValueError when out of range or before the first contents entry."""
     runs = _runs(prep)
     if runs:
-        cands = [(e["title"], e["pdf"] + printed - e["printed"]) for e, end in runs
-                 if printed >= e["printed"] and e["pdf"] + printed - e["printed"] < end]
+        cands = [(e["title"], e["pdf"] + _h(prep, printed) - _h(prep, e["printed"])) for e, end in runs
+                 if printed >= e["printed"] and e["pdf"] + _h(prep, printed) - _h(prep, e["printed"]) < end]
         if section:
             exact = [c for c in cands if c[0].lower() == section.strip().lower()]
             cands = exact or [c for c in cands if section.strip().lower() in c[0].lower()]
@@ -105,19 +111,37 @@ def to_pdf(prep: Prepared, printed: int, section: str | None = None):
         if len(cands) > 1:
             return [t for t, _ in cands]
         raise ValueError(f"page {printed} is not in a section of the contents")
-    p = printed + prep.offset
+    p = _h(prep, printed) + prep.offset
     if not 1 <= p <= prep.pages:
-        raise ValueError(f"page {printed} is outside the document (1-{prep.pages - prep.offset})")
+        raise ValueError(f"page {printed} is outside the document")
     return p
 
 
 def to_printed(prep: Prepared, pdf_page: int) -> int | None:
     for e, end in _runs(prep):
         if e["pdf"] <= pdf_page < end:
-            return e["printed"] + pdf_page - e["pdf"]
+            return max(e["printed"], 2 * (e["printed"] // 2 + pdf_page - e["pdf"])) if prep.spread \
+                else e["printed"] + pdf_page - e["pdf"]
     if prep.contents:
         return None  # front matter
-    return pdf_page - prep.offset if pdf_page - prep.offset >= 1 else None
+    p = (pdf_page - prep.offset) * (2 if prep.spread else 1)
+    return p if p >= 1 else None
+
+
+def _forward(pdfs: list[int | None]) -> list[int]:
+    """Indexes of the longest strictly increasing run of located PDF pages (None = not located)."""
+    idx = [i for i, p in enumerate(pdfs) if p]
+    best: dict[int, list[int]] = {}
+    for i in idx:
+        best[i] = max((best[j] for j in idx if j < i and pdfs[j] < pdfs[i]), key=len, default=[]) + [i]
+    return max(best.values(), key=len, default=[])
+
+
+def _numbered(text: str, printed: int, spread: bool) -> bool:
+    """The page prints this page number (or, on a spread, its pair's) near its top or bottom."""
+    t = " ".join(text.split())
+    nums = {printed, printed ^ 1} if spread else {printed}
+    return any(re.search(rf"(?<![\d.,]){n}(?![\d.,%])", t[:200] + " | " + t[-200:]) for n in nums)
 
 
 def _starts_with(text: str, title: str) -> bool:
@@ -132,7 +156,8 @@ async def prepare(store, url: str) -> Prepared:
         return cache[url]
     n = await store.pages(url)
     layer = await store.text_layer(url)
-    prep = Prepared(pages=n, scanned=sum(1 for i in range(1, n + 1) if not (layer.get(i) or "").strip()))
+    prep = Prepared(pages=n, scanned=sum(1 for i in range(1, n + 1) if not (layer.get(i) or "").strip()),
+                    spread=await store.spread(url))
     c = await store.contents(url)
 
     titles = [t for t, _ in c.entries]
@@ -143,24 +168,43 @@ async def prepare(store, url: str) -> Prepared:
         return next((p for p in range(max(1, lo), min(n, hi) + 1)
                      if p not in toc_pages and _starts_with(layer.get(p) or "", title)), None)
 
-    prep.contents = [{"title": t, "printed": pr, "pdf": find(t, pr - SEARCH_BEFORE, pr + SEARCH_AFTER)}
-                     for t, pr in c.entries]
+    def place(entries: list[tuple[str, int]]) -> list[dict]:
+        out = [{"title": t, "printed": pr, "pdf": find(t, _h(prep, pr) - SEARCH_BEFORE, _h(prep, pr) + SEARCH_AFTER)}
+               for t, pr in entries]
+        located = [e for e in out if e["pdf"]]
+        if not located:
+            return out
+        guess = Counter(e["pdf"] - _h(prep, e["printed"]) for e in located).most_common(1)[0][0]
+        for i, e in enumerate(out):  # not near its printed page: try around the common offset, then
+            if e["pdf"]:             # anywhere between the neighbouring located entries
+                continue
+            e["pdf"] = find(e["title"], _h(prep, e["printed"]) + guess - SEARCH_BEFORE,
+                            _h(prep, e["printed"]) + guess + SEARCH_BEFORE)
+            if not e["pdf"] and len(e["title"].split()) > 1:  # one word ("Strength") matches too much text
+                prev = max((x["pdf"] for x in out[:i] if x["pdf"]), default=0)
+                nxt = min((x["pdf"] for x in out[i + 1:] if x["pdf"]), default=n + 1)
+                e["pdf"] = find(e["title"], prev + 1, min(nxt - 1, prev + MAX_GAP))
+        keep = set(_forward([e["pdf"] for e in out]))  # entries must run forward through the PDF: keep the
+        for i, e in enumerate(out):                       # longest such run, drop the outliers
+            if i not in keep:
+                e["pdf"] = None
+        return out
+
+    # multi-column contents pages come out of the text layer scrambled, and restarted numbering looks the same:
+    # keep whichever order (the contents' own, or by page number) places more entries
+    tries = [place(c.entries), place(sorted(c.entries, key=lambda e: e[1]))]
+    prep.contents = max(tries, key=lambda es: sum(1 for e in es if e["pdf"]))
     located = [e for e in prep.contents if e["pdf"]]
     if located:
-        guess = Counter(e["pdf"] - e["printed"] for e in located).most_common(1)[0][0]
-        for i, e in enumerate(prep.contents):  # not near its printed page: try around the common offset, then
-            if e["pdf"]:                       # anywhere between the neighbouring located entries
-                continue
-            e["pdf"] = find(e["title"], e["printed"] + guess - SEARCH_BEFORE, e["printed"] + guess + SEARCH_BEFORE)
-            if not e["pdf"]:
-                prev = max((x["pdf"] for x in prep.contents[:i] if x["pdf"]), default=0)
-                nxt = min((x["pdf"] for x in prep.contents[i + 1:] if x["pdf"]), default=n + 1)
-                e["pdf"] = find(e["title"], prev + 1, min(nxt - 1, prev + MAX_GAP))
-        last = 0
-        for e in prep.contents:  # entries must run forward through the PDF; drop any that don't
-            if e["pdf"] and e["pdf"] <= last:
+        guess = Counter(e["pdf"] - _h(prep, e["printed"]) for e in located).most_common(1)[0][0]
+        for e in prep.contents:  # the page at the common offset prints the entry's page number: that's its start
+            at = _h(prep, e["printed"]) + guess
+            if e["pdf"] != at and 1 <= at <= n and _numbered(layer.get(at) or "", e["printed"], prep.spread):
+                e["pdf"] = at
+        keep = set(_forward([e["pdf"] for e in prep.contents]))
+        for i, e in enumerate(prep.contents):
+            if i not in keep:
                 e["pdf"] = None
-            last = e["pdf"] or last
         prep.offset, prep.offset_ok = guess, True
     else:
         # nothing located (e.g. scanned pages): keep the contents for the agent, numbers unverified
@@ -169,11 +213,12 @@ async def prepare(store, url: str) -> Prepared:
             lines = [ln.strip() for ln in (layer.get(p) or "").splitlines() if ln.strip()]
             for ln in lines[:2] + lines[-3:]:
                 if re.fullmatch(r"\d{1,4}", ln):
-                    offs[p - int(ln)] += 1
+                    offs[p - _h(prep, int(ln))] += 1
         if offs and offs.most_common(1)[0][1] >= 3:
             prep.offset, prep.offset_ok = offs.most_common(1)[0][0], True
     prep.index = PageIndex.build({p: t for p, t in layer.items() if (t or "").strip()}, prep)
-    log.info("prepared %s: %d pages, %d contents entries, offset %d (%s), %d scanned pages", url, n,
-             len(prep.contents), prep.offset, "verified" if prep.offset_ok else "unverified", prep.scanned)
+    log.info("prepared %s: %d pages%s, %d contents entries (%d located), offset %d (%s), %d scanned pages", url, n,
+             " (two-page spreads)" if prep.spread else "", len(prep.contents), sum(1 for e in prep.contents if e["pdf"]),
+             prep.offset, "verified" if prep.offset_ok else "unverified", prep.scanned)
     cache[url] = prep
     return prep

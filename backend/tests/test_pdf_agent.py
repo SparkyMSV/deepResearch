@@ -119,3 +119,20 @@ def test_same_printed_page_in_two_sections(env, monkeypatch):
     run(env, s, monkeypatch)
     assert "already read" not in s.sent[2]["messages"][-1]["content"]
     assert tuple(c.conn.execute("select page, printed_page from fields where name='Total Debt'").fetchone()) == (21, 2)
+
+
+def test_spread_pages_read_once_with_both_halves(env, monkeypatch):
+    c, sub = env
+    ps = ["letter", "blank"] + [f"sheet {i}" for i in range(3, 41)]
+    for t, pr in TOC:
+        ps[pr // 2 + 2 - 1] = f"{t}\nbody text"
+    ps[8] = "Financial statements (contd.) " + "x" * 5000 + " total borrowings were 6,100 crore at 31 March 2026"
+    c.store = FakeStore({U: ps}, {U: TOC})
+    c.store.spreads = {U}
+    s = Script(Reply("", [call("read_pages", **{"from": 14, "to": 15})], 900),
+               Reply("", [call("record_value", field=1, value="6,100", unit="crore", quote=Q, page=15)], 1500), END)
+    out, _ = run(env, s, monkeypatch)
+    read = s.sent[1]["messages"][-1]["content"]
+    assert "[pages 14-15]" in read and "6,100 crore" in read and "15" not in read.split("[pages 14-15]")[0]
+    f = c.conn.execute("select value, page, printed_page from fields where name='Total Debt'").fetchone()
+    assert tuple(f) == ("6,100", 9, 15)

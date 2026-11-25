@@ -57,7 +57,32 @@ def _ocr(path: str, n: int) -> tuple[str, int]:
 
 _QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-",
                          "|": " ", "*": " ", "\ufb01": "fi", "\ufb02": "fl"})
-_ENTRY = re.compile(r"^(.{3,80}?)[\s.\u00b7\u2026_-]{2,}(\d{1,4})\s*$")
+_ENTRY = re.compile(r"^(.{3,80}?)[\s.\u00b7\u2026_-]+(\d{1,4})\s*$")  # "Title ..... 12", "Title 12"
+_ENTRY_NUM_FIRST = re.compile(r"^(\d{1,4})\s+(.{3,80})$")  # "12 Title" (multi-column layouts)
+
+
+def _entry(line: str) -> tuple[str, int] | None:
+    if m := _ENTRY.match(line):
+        title, n = m.group(1), m.group(2)
+    elif m := _ENTRY_NUM_FIRST.match(line):
+        n, title = m.group(1), m.group(2)
+    else:
+        return None
+    title = title.strip(" .|*\u00b7\u2026_-")
+    # not a title: page ranges ("124-274"), addresses ("Mumbai - 400 051"), years ("Annual Report 2025-26")
+    if sum(c.isalpha() for c in title) < 3 or title[-1].isdigit() or re.search(r"\b(19|20)\d\d\b", f"{title} {n}"):
+        return None  # also running headers ("10 ANNUAL REPORT 2025-26 ...")
+    return title, int(n)
+
+
+def parse_contents(pages: list[str]) -> list[tuple[str, int]]:
+    """Contents entries in the contents' own order, deduplicated, from the pages listing the most of them (at
+    least half the best page's count, and pages beyond their own count: footnotes run 1, 2, 3 ...)."""
+    per = [[e for ln in t.splitlines() if (e := _entry(ln.strip(" #*|")))] for t in pages]
+    per = [es for es in per if len(es) >= 3 and max(n for _, n in es) > len(es)]
+    best = max(map(len, per), default=0)
+    found = list(dict.fromkeys(e for es in per if 2 * len(es) >= best for e in es))
+    return found if len(found) >= 5 else []
 
 
 def norm(s: str) -> str:
@@ -73,6 +98,17 @@ def _layer(path: str) -> dict[int, str]:
         doc = pdfium.PdfDocument(path)
         try:
             return {i + 1: doc[i].get_textpage().get_text_range() for i in range(len(doc))}
+        finally:
+            doc.close()
+
+
+def _spread(path: str) -> bool:
+    """Most pages landscape: each PDF page holds two printed pages side by side."""
+    with _lock:
+        doc = pdfium.PdfDocument(path)
+        try:
+            wide = sum(1 for i in range(len(doc)) if (lambda w, h: w > 1.3 * h)(*doc[i].get_size()))
+            return wide > len(doc) / 2
         finally:
             doc.close()
 
@@ -126,12 +162,17 @@ class PdfStore:
         return self._text[(url, n)]
 
     async def contents(self, url: str) -> Contents:
-        head = [await self.text(url, i) for i in range(1, min(await self.pages(url), HEAD_PAGES) + 1)]
-        lines = [ln.strip(" #*|") for t in head for ln in t.splitlines() if ln.strip(" #*|")]
-        entries = [(m.group(1).strip(" .|*"), int(m.group(2))) for ln in lines if (m := _ENTRY.match(ln))]
-        if len(entries) >= 5:
+        layer = await self.text_layer(url)
+        head = [layer.get(i) if (layer.get(i) or "").strip() else await self.text(url, i)  # OCR scanned pages only
+                for i in range(1, min(await self.pages(url), HEAD_PAGES) + 1)]
+        if entries := parse_contents(head):
             return Contents(entries[:MAX_ENTRIES], "")
+        lines = [ln.strip(" #*|") for t in head for ln in t.splitlines() if ln.strip(" #*|")]
         return Contents([], "\n".join(lines[:RAW_LINES]))
+
+    async def spread(self, url: str) -> bool:
+        await self.pages(url)
+        return await asyncio.to_thread(_spread, self._files[url])
 
     async def locate(self, url: str, title: str, printed: int) -> tuple[int, bool]:
         """PDF page where a contents entry starts: printed page, then +1, -1, +2, ... up to LOCATE_SPAN."""

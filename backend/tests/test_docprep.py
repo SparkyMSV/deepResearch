@@ -116,3 +116,41 @@ def test_exact_section_name_wins():
     for (t, _), pdf in zip(toc, (5, 10, 15, 20, 25)):
         pages[pdf - 1] = f"{t}\nbody"
     assert docprep.to_pdf(prep(pages, toc), 2, section="Notes") == 11
+
+
+def test_two_page_spreads_map_printed_pages_in_pairs():
+    # PDF 1-2 single pages (letter), then spreads: PDF 3 = printed 2-3, PDF 4 = 4-5, ...
+    pages = ["Submission of annual report", "blank"] + [f"spread {2 * (i - 2)}-{2 * (i - 2) + 1}" for i in range(3, 103)]
+    toc = [("The Journey", 2), ("About Us", 22), ("Statutory Reports", 80), ("Financial Statements", 120),
+           ("Valuation Report", 180)]
+    for t, pr in toc:
+        pages[pr // 2 + 2 - 1] = f"{t}\nbody"
+    s = FakeStore({U: pages}, {U: toc})
+    s.spreads = {U}
+    p = asyncio.run(docprep.prepare(s, U))
+    assert p.spread and p.offset_ok and [e["pdf"] for e in p.contents] == [3, 13, 42, 62, 92]
+    assert docprep.to_pdf(p, 150) == 77 and docprep.to_pdf(p, 151) == 77 and docprep.to_pdf(p, 152) == 78
+    assert docprep.to_printed(p, 77) == 150 and docprep.to_printed(p, 62) == 120
+
+
+def test_scrambled_contents_are_placed_in_page_order():
+    pages, toc = doc_with_offset_two()
+    scrambled = toc[3:] + toc[:3]  # multi-column contents read right column first
+    p = prep(pages, scrambled)
+    assert [(e["title"], e["pdf"]) for e in p.contents] == [(t, pr + 2) for t, pr in toc]
+
+
+def test_one_word_title_not_matched_far_from_its_page():
+    pages, toc = doc_with_offset_two()
+    pages[27] = "Strength of our balance sheet\nbody"
+    p = prep(pages, toc[:2] + [("Strength", 12)] + toc[2:])
+    assert [e["pdf"] for e in p.contents] == [6, 12, None, 17, 22, 27]
+
+
+def test_printed_page_number_corrects_a_title_match_elsewhere():
+    pages, toc = doc_with_offset_two()
+    pages[11] = "Independent auditor's report\nbody\n10"  # the real start: no title on top, page number in the footer
+    pages[19] = "Financial statements of the subsidiaries\nbody"  # a later page starting with the same words
+    pages[16] = "Notes overview\nbody\n15"  # an entry whose title isn't on top: placed by its page number
+    p = prep(pages, toc)
+    assert [e["pdf"] for e in p.contents] == [6, 12, 17, 22, 27]

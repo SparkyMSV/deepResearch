@@ -11,7 +11,7 @@ from app.logs import clip
 log = logging.getLogger(__name__)
 
 PAGES_PER_CALL, PAGE_CHARS, ANCHORS = 2, 4500, 6
-REMOVED = "[page {} read; text removed to save space]"
+REMOVED = "[{} read; text removed to save space]"
 
 
 def _fn(name, desc, props, required):
@@ -89,7 +89,7 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
             if lo is None:
                 return "error: read_pages needs printed page numbers"
             hi = lo if hi is None or hi < lo else min(hi, lo + PAGES_PER_CALL - 1)
-            out, pages = [], 0
+            out, pages, now = [], 0, set()
             for p in range(lo, hi + 1):
                 try:
                     pdf = docprep.to_pdf(prep, p, a.get("section"))
@@ -99,18 +99,23 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
                 if isinstance(pdf, list):
                     out.append(f"page {p} exists in several sections: {'; '.join(pdf)}. Call again with section.")
                     continue
+                if pdf in now:  # spreads: both printed pages are on this PDF page
+                    continue
                 if pdf in read:
                     out.append(f"already read page {p} in this call; its text is above")
                     continue
                 if not ctx.pages_left():
                     out.append("Page budget used up; record what you have and call report.")
                     break
-                text = (await ctx.store.text(doc["url"], pdf))[:PAGE_CHARS]
-                read[pdf] = {"printed": p, "text": text}
+                text = (await ctx.store.text(doc["url"], pdf))[:PAGE_CHARS * (2 if prep.spread else 1)]
+                pp = docprep.to_printed(prep, pdf)
+                label = f"pages {pp}-{pp + 1}" if prep.spread and pp and pp % 2 == 0 else f"page {p}"
+                read[pdf] = {"printed": p, "text": text, "label": label}
+                now.add(pdf)
                 sub["read"].setdefault(doc["key"], set()).add(pdf)
                 ctx.pages_used += 1
                 pages += 1
-                out.append(f"[page {p}]\n{text.strip() or '(no text on this page)'}")
+                out.append(f"[{label}]\n{text.strip() or '(no text on this page)'}")
             if pages:
                 on_round(f"{doc['key']} {page_ranges([v['printed'] for v in read.values() if lo <= v['printed'] <= hi])}",
                          pages)
@@ -148,8 +153,8 @@ async def explore(ctx, sub, doc_key: str, field_nos: list[int], goal: str, on_ro
         tool_ids = {tc["id"]: tc["function"]["name"] for m in msgs for tc in m.get("tool_calls") or []}
         reads = [i for i, m in enumerate(msgs) if m.get("role") == "tool" and tool_ids.get(m["tool_call_id"]) == "read_pages"]
         for i in reads[:-1]:
-            pages = sorted({v["printed"] for v in read.values() if f"[page {v['printed']}]" in msgs[i]["content"]})
-            msgs[i] = {**msgs[i], "content": "; ".join(REMOVED.format(p) for p in pages) or "[text removed]"}
+            labels = [v["label"] for v in read.values() if f"[{v['label']}]" in msgs[i]["content"]]
+            msgs[i] = {**msgs[i], "content": "; ".join(REMOVED.format(lb) for lb in labels) or "[text removed]"}
         return msgs
 
     msgs = [{"role": "system", "content": _prompt(ctx, doc, prep, fields, goal)}, {"role": "user", "content": "Begin."}]
